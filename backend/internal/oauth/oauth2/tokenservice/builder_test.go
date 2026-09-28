@@ -2590,6 +2590,7 @@ func testRSAPublicKeyToJWKS(pub *rsa.PublicKey, use string) string {
 	return string(b)
 }
 
+<<<<<<< HEAD
 const (
 	subjectIdentityClientID = "client-entity-1"
 	subjectIdentityUserID   = "user-entity-1"
@@ -2956,6 +2957,8 @@ func (suite *TokenBuilderTestSuite) TestBuildIDToken_UserAttributeCannotSynthesi
 	suite.mockJWTService.AssertExpectations(suite.T())
 }
 
+=======
+>>>>>>> 07dad8d71 (Type refresh tokens rt+jwt)
 // Refresh tokens are minted with the rt+jwt typ so they are self-identifying: a validator that
 // whitelists the types it accepts rejects one by default, rather than by remembering to check the
 // access_token_sub claim. The other BuildRefreshToken tests pass mock.Anything for the typ argument,
@@ -2981,6 +2984,7 @@ func (suite *TokenBuilderTestSuite) TestBuildRefreshToken_MintsRTJWTTyp() {
 	assert.NotNil(suite.T(), result)
 	suite.mockJWTService.AssertExpectations(suite.T())
 }
+<<<<<<< HEAD
 
 // ----- BuildLogoutToken -----
 
@@ -3233,3 +3237,5 @@ func (s *OUAttributesTestSuite) TestOnlyTheClaimsSuppliedAreReplaced() {
 	s.Equal("customer-a", claims[constants.ClaimOUID])
 	s.Equal("owner", claims[constants.ClaimOUHandle])
 }
+=======
+>>>>>>> 07dad8d71 (Type refresh tokens rt+jwt)

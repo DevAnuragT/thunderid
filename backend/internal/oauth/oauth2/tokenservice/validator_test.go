@@ -3575,6 +3575,7 @@ func (suite *IDJAGValidatorTestSuite) TestValidateIDJAGAssertion_JTIExceedsMaxLe
 	suite.assertRejectsSignedAssertion(claims, "assertion 'jti' exceeds maximum length")
 }
 
+<<<<<<< HEAD
 // An external IdP's "assurance" claim must not mark its token as one of this server's auth
 // assertions. The claim name is not reserved — an IdP may legitimately use it to convey a NIST
 // 800-63 assurance level — and misreading it subjects the token to the auth assertion audience
@@ -3692,6 +3693,8 @@ func (suite *TokenValidatorTestSuite) TestValidateRefreshToken_Success_RestoresS
 	suite.mockJWTService.AssertExpectations(suite.T())
 }
 
+=======
+>>>>>>> 07dad8d71 (Type refresh tokens rt+jwt)
 // createTestJWTWithTyp builds a test token with an explicit typ header, for the refresh token typ
 // migration: refresh tokens are minted rt+jwt, and those minted before it carry the generic type.
 func (suite *TokenValidatorTestSuite) createTestJWTWithTyp(typ string, claims map[string]interface{}) string {
@@ -3769,7 +3772,11 @@ func (suite *TokenValidatorTestSuite) TestValidateSubjectToken_Error_RefreshToke
 
 	assert.Error(suite.T(), err)
 	assert.Nil(suite.T(), result)
+<<<<<<< HEAD
 	assert.Contains(suite.T(), err.Error(), `a token of type "rt+jwt" cannot be presented as a subject_token`)
+=======
+	assert.Contains(suite.T(), err.Error(), "refresh token cannot be presented as a subject_token")
+>>>>>>> 07dad8d71 (Type refresh tokens rt+jwt)
 }
 
 // The same, for a refresh token minted before rt+jwt: the generic typ plus access_token_sub.
@@ -3783,6 +3790,7 @@ func (suite *TokenValidatorTestSuite) TestValidateSubjectToken_Error_RefreshToke
 	assert.Contains(suite.T(), err.Error(), "refresh token cannot be presented as a subject_token")
 }
 
+<<<<<<< HEAD
 // A refresh token is refused in the actor slot for the same reasons.
 func (suite *TokenValidatorTestSuite) TestValidateActorToken_Error_RefreshToken() {
 	token := suite.createTestJWTWithTyp(jwt.TokenTypeRefreshToken, refreshTokenClaims())
@@ -3794,6 +3802,8 @@ func (suite *TokenValidatorTestSuite) TestValidateActorToken_Error_RefreshToken(
 	assert.Contains(suite.T(), err.Error(), `a token of type "rt+jwt" cannot be presented as a subject_token`)
 }
 
+=======
+>>>>>>> 07dad8d71 (Type refresh tokens rt+jwt)
 // An ID token remains a valid subject token: its sub is the end user, so the exchange is the
 // documented "act on behalf of a user you hold an id_token for" case. Guards against the refresh
 // token rejection above over-matching on the shared generic typ.
@@ -3867,6 +3877,7 @@ func (suite *TokenValidatorTestSuite) TestValidateSubjectToken_Error_Undecodable
 	assert.Nil(suite.T(), result)
 	assert.Contains(suite.T(), err.Error(), "failed to decode token")
 }
+<<<<<<< HEAD
 
 func (suite *TokenValidatorTestSuite) TestRevocationIdentity_ScopeCriteriaAreKeyedByAudience() {
 	identity, err := revocationIdentity(map[string]interface{}{
@@ -4000,3 +4011,5 @@ func (suite *TokenValidatorTestSuite) TestValidateRefreshToken_MalformedAudience
 	assert.ErrorContains(suite.T(), err, "invalid audience claim")
 	enforcement.AssertNotCalled(suite.T(), "EnsureNotRevoked", mock.Anything, mock.Anything)
 }
+=======
+>>>>>>> 07dad8d71 (Type refresh tokens rt+jwt)

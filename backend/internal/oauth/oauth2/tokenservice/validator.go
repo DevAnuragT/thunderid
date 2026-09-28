@@ -289,7 +289,15 @@ func (tv *tokenValidator) validateExchangeToken(
 ) (*SubjectTokenClaims, map[string]interface{}, error) {
 	header, err := jwt.DecodeJWTHeader(token)
 	if err != nil {
+<<<<<<< HEAD
 		return nil, nil, fmt.Errorf("failed to decode token header: %w", err)
+=======
+		return nil, fmt.Errorf("failed to decode token header: %w", err)
+	}
+	typ, _ := header["typ"].(string)
+	if typ == jwt.TokenTypeIDJAG {
+		return nil, fmt.Errorf("an ID-JAG cannot be presented as a subject_token")
+>>>>>>> 07dad8d71 (Type refresh tokens rt+jwt)
 	}
 	typ, _ := header["typ"].(string)
 
@@ -310,12 +318,30 @@ func (tv *tokenValidator) validateExchangeToken(
 	}
 
 	// Try the server's own issuer first.
+<<<<<<< HEAD
 	if selfIssued {
+=======
+	if tv.isSelfIssuer(iss) {
+		// A refresh token is not a subject token. Scoped to self-issued tokens, because rt+jwt and
+		// access_token_sub describe our own refresh tokens only. An external issuer's typ header is not
+		// ours to interpret, exactly as its jti contributes nothing to the revocation deny list.
+		if jwt.IsRefreshTokenType(typ) {
+			return nil, fmt.Errorf("a refresh token cannot be presented as a subject_token")
+		}
+>>>>>>> 07dad8d71 (Type refresh tokens rt+jwt)
 		// Refresh tokens minted before rt+jwt carry the generic type; access_token_sub identifies them.
 		// TODO: Remove on the next major version, once no pre-rt+jwt refresh token can still be valid.
 		if _, isLegacyRefresh := claims[constants.ClaimAccessTokenSubject]; isLegacyRefresh &&
 			jwt.IsLegacyRefreshTokenType(typ) {
+<<<<<<< HEAD
 			return nil, nil, fmt.Errorf("a refresh token cannot be presented as a subject_token")
+=======
+			return nil, fmt.Errorf("a refresh token cannot be presented as a subject_token")
+		}
+
+		if err := tv.verifyTokenSignatureByIssuer(ctx, token, iss); err != nil {
+			return nil, fmt.Errorf("invalid subject token signature: %w", err)
+>>>>>>> 07dad8d71 (Type refresh tokens rt+jwt)
 		}
 
 		if err := tv.verifyTokenSignatureByIssuer(ctx, token, iss); err != nil {
