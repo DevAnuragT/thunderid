@@ -232,8 +232,14 @@ overrides:
   browserslist: '>=4.28.7'
   # JUSTIFICATION: Fixes GHSA-6x64-9x62-f9x9 (CSS injection on sibling elements),
   # GHSA-3rrr-jr9j-h3q3 (prototype pollution in architecture diagrams), and GHSA XY chart
+<<<<<<< HEAD
   # infinite-loop DoS. Transitive via @docusaurus/theme-mermaid.
   mermaid: '>=11.16.1'
+=======
+  # infinite-loop DoS. Transitive via @docusaurus/theme-mermaid. Constrained to the 11.x line so the
+  # resolver doesn't move Docusaurus onto the untested 12.x major.
+  mermaid: '>=11.16.1 <12'
+>>>>>>> 351563e5c (Fix high and critical pnpm audit advisories)
   # JUSTIFICATION: Fixes GHSA-5jgf-p345-68v8 (host confusion via skipped IDN canonicalization on
   # scheme-relative references), GHSA-f65p-4m7j-42xc (SSRF via malformed IPv6 normalization),
   # GHSA-fph4-wmhf-6fwf (SSRF via repeated hostname percent-decoding) and GHSA-jqff-g426-hqxp
