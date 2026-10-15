@@ -3,8 +3,8 @@ CREATE TABLE "ENTITY_TYPES" (
     DEPLOYMENT_ID   VARCHAR(255) NOT NULL,
     ID          VARCHAR(36) NOT NULL,
     CATEGORY    VARCHAR(50) NOT NULL,
+    NAME        VARCHAR(100) NOT NULL,
     HANDLE      VARCHAR(100) NOT NULL,
-    DISPLAY_NAME VARCHAR(100) NOT NULL,
     OU_ID       VARCHAR(36) NOT NULL,
     ALLOW_SELF_REGISTRATION BOOLEAN DEFAULT FALSE NOT NULL,
     SCHEMA_DEF  JSONB NOT NULL,
@@ -480,9 +480,28 @@ CREATE TABLE "GATEWAY_APPLIED_VERSION" (
     PRIMARY KEY (GATEWAY_ID, DEPLOYMENT_ID)
 );
 
+-- The resources each gateway is set to leave alone: an apply neither writes nor removes them there,
+-- until one selects them again. A resource is keyed by its type and its id, or its name when it has
+-- none. Its type, id and name are kept too, so one whose removal was held back can still be offered
+-- once no version names it. A gateway declared in a file has no GATEWAY row, so there is no foreign
+-- key.
+CREATE TABLE "GATEWAY_EXCLUDED_RESOURCE" (
+    DEPLOYMENT_ID VARCHAR(255) NOT NULL,
+    GATEWAY_ID VARCHAR(36) NOT NULL,
+    RESOURCE_KEY VARCHAR(512) NOT NULL,
+    RESOURCE_TYPE VARCHAR(255) NOT NULL,
+    RESOURCE_ID VARCHAR(255),
+    RESOURCE_NAME VARCHAR(255),
+    PRIMARY KEY (DEPLOYMENT_ID, GATEWAY_ID, RESOURCE_KEY)
+);
+
 -- Table capturing the resource-sharing graph. Generic across resource types: a policy is one
 -- organization unit's standing decision about one resource, and there is exactly one per
 -- (resource, initiating OU) so that an edit has a single well-defined subject.
+--
+-- SECTIONS says which sections the policy states, in which mode, and what each one excludes, as one
+-- document keyed by section: {"childUnits": {"mode": "all", "excludedOuIds": ["<ou id>"]}}. The
+-- organization units a section names one by one are rows of RESOURCE_SHARING_POLICY_UNIT.
 CREATE TABLE "RESOURCE_SHARING_POLICY" (
     DEPLOYMENT_ID    VARCHAR(255) NOT NULL,
     ID               VARCHAR(36) PRIMARY KEY,
@@ -492,6 +511,7 @@ CREATE TABLE "RESOURCE_SHARING_POLICY" (
     INITIATING_OU_ID VARCHAR(36) NOT NULL,
     POLICY_STAGE     VARCHAR(16) NOT NULL CHECK (POLICY_STAGE IN ('share', 'reshare')),
     PARENT_POLICY_ID VARCHAR(36),
+    SECTIONS         JSONB NOT NULL,
     VERSION          INTEGER NOT NULL DEFAULT 1,
     CREATED_AT       TIMESTAMPTZ DEFAULT NOW(),
     UPDATED_AT       TIMESTAMPTZ DEFAULT NOW(),
@@ -500,62 +520,46 @@ CREATE TABLE "RESOURCE_SHARING_POLICY" (
 
 CREATE INDEX idx_rsp_parent ON "RESOURCE_SHARING_POLICY" (PARENT_POLICY_ID);
 
--- One policy names several targets, which is what splitting the target off the policy row buys.
--- The blanket scopes carry no target organization unit; the rest name exactly one.
-CREATE TABLE "RESOURCE_SHARING_POLICY_TARGET" (
+-- The organization units a policy names one by one: the direct children of a 'selected' child-units
+-- decision, and the roots of a 'selected' other-tree-roots decision. A blanket decision names none,
+-- so it has no rows here. A unit is named once per policy, and only a child unit may carry the
+-- resource on beneath itself.
+CREATE TABLE "RESOURCE_SHARING_POLICY_UNIT" (
     DEPLOYMENT_ID VARCHAR(255) NOT NULL,
-    ID            VARCHAR(36) PRIMARY KEY,
     POLICY_ID     VARCHAR(36) NOT NULL
                   REFERENCES "RESOURCE_SHARING_POLICY" (ID) ON DELETE CASCADE,
-    TARGET_SCOPE  VARCHAR(16) NOT NULL
-                  CHECK (TARGET_SCOPE IN ('all_ous', 'all_roots', 'root', 'all_children', 'ou', 'ou_subtree')),
-    TARGET_OU_ID  VARCHAR(36),
-    UNIQUE (POLICY_ID, TARGET_SCOPE, TARGET_OU_ID),
-    UNIQUE (POLICY_ID, ID),
-    CHECK ((TARGET_SCOPE IN ('all_ous', 'all_roots') AND TARGET_OU_ID IS NULL)
-        OR (TARGET_SCOPE NOT IN ('all_ous', 'all_roots') AND TARGET_OU_ID IS NOT NULL))
+    SECTION       VARCHAR(16) NOT NULL CHECK (SECTION IN ('childUnits', 'otherTreeRoots')),
+    OU_ID         VARCHAR(36) NOT NULL,
+    REACH         VARCHAR(16) NOT NULL CHECK (REACH IN ('unit', 'subtree')),
+    PRIMARY KEY (POLICY_ID, OU_ID),
+    CHECK (SECTION = 'childUnits' OR REACH = 'unit')
 );
 
-CREATE INDEX idx_rspt_policy ON "RESOURCE_SHARING_POLICY_TARGET" (POLICY_ID);
-CREATE INDEX idx_rspt_target_ou ON "RESOURCE_SHARING_POLICY_TARGET" (DEPLOYMENT_ID, TARGET_OU_ID);
+CREATE INDEX idx_rspu_ou ON "RESOURCE_SHARING_POLICY_UNIT" (DEPLOYMENT_ID, OU_ID);
 
--- The UNIQUE above leaves the deployment-wide scopes unconstrained: their TARGET_OU_ID is NULL, and
--- both engines count NULLs as distinct, so one policy could hold the same blanket target twice.
-CREATE UNIQUE INDEX idx_rspt_blanket_once
-    ON "RESOURCE_SHARING_POLICY_TARGET" (POLICY_ID, TARGET_SCOPE)
-    WHERE TARGET_OU_ID IS NULL;
-
--- Organization units carved out of every target of a policy, each taking its subtree with it.
-CREATE TABLE "RESOURCE_SHARING_POLICY_EXCLUSION" (
-    DEPLOYMENT_ID  VARCHAR(255) NOT NULL,
-    POLICY_ID      VARCHAR(36) NOT NULL
-                   REFERENCES "RESOURCE_SHARING_POLICY" (ID) ON DELETE CASCADE,
-    EXCLUDED_OU_ID VARCHAR(36) NOT NULL,
-    PRIMARY KEY (POLICY_ID, EXCLUDED_OU_ID)
-);
-
--- What a policy says a target may do with one field. TARGET_ID null means the rule applies to
--- every target; set means it overrides the policy-level rule for that target alone.
+-- What a policy says the units it reaches may do with one field. A blanket decision carries one set
+-- of rules for everything it reaches, stored with a null OU_ID; a unit named one by one carries its
+-- own, stored against that unit.
 CREATE TABLE "RESOURCE_SHARING_POLICY_OVERLAY_RULE" (
     DEPLOYMENT_ID       VARCHAR(255) NOT NULL,
     ID                  VARCHAR(36) PRIMARY KEY,
     POLICY_ID           VARCHAR(36) NOT NULL
                         REFERENCES "RESOURCE_SHARING_POLICY" (ID) ON DELETE CASCADE,
-    TARGET_ID           VARCHAR(36),
+    SECTION             VARCHAR(16) NOT NULL CHECK (SECTION IN ('allUnits', 'childUnits', 'otherTreeRoots')),
+    OU_ID               VARCHAR(36),
     FIELD_KEY           VARCHAR(255) NOT NULL,
     RESOLVED            JSONB NOT NULL,
     REQUESTED           JSONB NOT NULL,
-    UNIQUE (POLICY_ID, TARGET_ID, FIELD_KEY),
-    FOREIGN KEY (POLICY_ID, TARGET_ID)
-        REFERENCES "RESOURCE_SHARING_POLICY_TARGET" (POLICY_ID, ID) ON DELETE CASCADE
+    UNIQUE (POLICY_ID, SECTION, OU_ID, FIELD_KEY)
 );
 
 CREATE INDEX idx_rspor_policy ON "RESOURCE_SHARING_POLICY_OVERLAY_RULE" (POLICY_ID);
-CREATE INDEX idx_rspor_target ON "RESOURCE_SHARING_POLICY_OVERLAY_RULE" (TARGET_ID);
 
-CREATE UNIQUE INDEX idx_rspor_policy_wide_once
-    ON "RESOURCE_SHARING_POLICY_OVERLAY_RULE" (POLICY_ID, FIELD_KEY)
-    WHERE TARGET_ID IS NULL;
+-- The UNIQUE above leaves a blanket decision's rules unconstrained: their OU_ID is NULL, and both
+-- engines count NULLs as distinct, so one decision could hold the same field twice.
+CREATE UNIQUE INDEX idx_rspor_blanket_once
+    ON "RESOURCE_SHARING_POLICY_OVERLAY_RULE" (POLICY_ID, SECTION, FIELD_KEY)
+    WHERE OU_ID IS NULL;
 
 -- A target organization unit's own value for one templated field of a shared resource.
 CREATE TABLE "RESOURCE_OVERLAY_VALUE" (
@@ -579,6 +583,7 @@ CREATE TABLE "NOTIFICATION_TEMPLATE" (
     ID            VARCHAR(36)  NOT NULL,
     CHANNEL       VARCHAR(16)  NOT NULL,
     HANDLE        VARCHAR(255) NOT NULL,
+    OU_ID         VARCHAR(36)  NOT NULL,
     DISPLAY_NAME  VARCHAR(255) NOT NULL,
     DESCRIPTION   VARCHAR(512),
     CONTENT       JSONB        NOT NULL,

@@ -1,4 +1,4 @@
-// Copyright 2025 The ThunderID Authors
+// Copyright 2025-2026 The ThunderID Authors
 // SPDX-License-Identifier: Apache-2.0
 
 import {render, screen, fireEvent} from '@testing-library/react';
@@ -76,11 +76,13 @@ vi.mock('../../../../hooks/useValidationStatus', () => ({
   }),
 }));
 
-// Mock useIdentityProviders + useSMSProviders
+// Mock useIdentityProviders + useSMSProviders + useEmailProviders
 const mockIdentityProviders = vi.fn<() => {data: unknown[]; isLoading: boolean}>();
 const mockSMSProviders = vi.fn<() => {data: unknown[]; isLoading: boolean}>();
+const mockEmailProviders = vi.fn<() => {data?: unknown[]; isLoading: boolean; isError?: boolean}>();
 vi.mock('@thunderid/configure-connections', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@thunderid/configure-connections')>()),
+  useEmailProviders: () => mockEmailProviders(),
   useIdentityProviders: () => mockIdentityProviders(),
   useSMSProviders: () => mockSMSProviders(),
 }));
@@ -125,6 +127,10 @@ describe('ExecutionExtendedProperties', () => {
       isLoading: false,
     });
     mockNotificationTemplates.mockReturnValue(loaded([]));
+    mockEmailProviders.mockReturnValue({
+      data: [],
+      isLoading: false,
+    });
   });
 
   describe('Google Federation Executor', () => {
@@ -952,6 +958,38 @@ describe('ExecutionExtendedProperties', () => {
       expect(screen.getByLabelText('flows:core.executions.email.emailTemplate.label')).toHaveValue('Password Recovery');
     });
 
+    // A failed read must not tell the user to create providers that may already exist.
+    it('should report a failed provider read instead of the no-providers warning', () => {
+      mockEmailProviders.mockReturnValue({data: undefined, isLoading: false, isError: true});
+      render(<ExecutionExtendedProperties resource={emailResource} onChange={mockOnChange} />);
+
+      expect(screen.getByText('flows:core.executions.email.sender.loadError')).toBeInTheDocument();
+      expect(screen.queryByText('flows:core.executions.email.sender.noSenders')).not.toBeInTheDocument();
+    });
+
+    it('should warn when the provider read succeeds with no providers', () => {
+      render(<ExecutionExtendedProperties resource={emailResource} onChange={mockOnChange} />);
+
+      expect(screen.getByText('flows:core.executions.email.sender.noSenders')).toBeInTheDocument();
+      expect(screen.queryByText('flows:core.executions.email.sender.loadError')).not.toBeInTheDocument();
+    });
+
+    // A failed read must not tell the user to create providers that may already exist.
+    it('should report a failed provider read instead of the no-providers warning', () => {
+      mockEmailProviders.mockReturnValue({data: undefined, isLoading: false, isError: true});
+      render(<ExecutionExtendedProperties resource={emailResource} onChange={mockOnChange} />);
+
+      expect(screen.getByText('flows:core.executions.email.sender.loadError')).toBeInTheDocument();
+      expect(screen.queryByText('flows:core.executions.email.sender.noSenders')).not.toBeInTheDocument();
+    });
+
+    it('should warn when the provider read succeeds with no providers', () => {
+      render(<ExecutionExtendedProperties resource={emailResource} onChange={mockOnChange} />);
+
+      expect(screen.getByText('flows:core.executions.email.sender.noSenders')).toBeInTheDocument();
+      expect(screen.queryByText('flows:core.executions.email.sender.loadError')).not.toBeInTheDocument();
+    });
+
     it('should preserve a template handle it does not know about', async () => {
       const resourceWithUnknownTemplate = {
         ...emailResource,
@@ -1759,6 +1797,26 @@ describe('ExecutionExtendedProperties', () => {
     });
   });
 
+  describe('Account Linking Executor', () => {
+    const linkingResource = {
+      id: 'linking-1',
+      data: {
+        action: {
+          executor: {
+            name: ExecutionTypes.AccountLinking,
+          },
+        },
+        properties: {},
+      },
+    } as unknown as Resource;
+
+    it('should render NoConfigProperties message', () => {
+      render(<ExecutionExtendedProperties resource={linkingResource} onChange={mockOnChange} />);
+
+      expect(screen.getByText('flows:core.executions.noConfig.description')).toBeInTheDocument();
+    });
+  });
+
   describe('Identifying Executor', () => {
     const identifyingResource = {
       id: 'identifying-executor-1',
@@ -1842,6 +1900,31 @@ describe('ExecutionExtendedProperties', () => {
         }),
         identifyingResource,
       );
+    });
+  });
+
+  describe('Access change executors', () => {
+    const makeResource = (name: string, mode: string): Resource =>
+      ({
+        id: `${name}-1`,
+        data: {
+          action: {
+            executor: {name, mode},
+          },
+        },
+      }) as unknown as Resource;
+
+    it.each([
+      [ExecutionTypes.AccessChangeValidator, 'role_deletion', 'accessChangeValidator'],
+      [ExecutionTypes.RoleExecutor, 'role_deletion', 'roleExecutor'],
+      [ExecutionTypes.GroupExecutor, 'group_membership_removal', 'groupExecutor'],
+      [ExecutionTypes.CriteriaRevocation, 'advance_cutoff', 'criteriaRevocation'],
+    ])('should route %s to its mode selector and hide the inputs editor', (name, mode, namespace) => {
+      render(<ExecutionExtendedProperties resource={makeResource(name, mode)} onChange={mockOnChange} />);
+
+      expect(screen.getByText(`flows:core.executions.${namespace}.description`)).toBeInTheDocument();
+      expect(screen.getByText(`flows:core.executions.${namespace}.mode.label`)).toBeInTheDocument();
+      expect(screen.queryByText('flows:core.executions.inputs.title')).not.toBeInTheDocument();
     });
   });
 

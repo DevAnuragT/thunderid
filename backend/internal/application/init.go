@@ -23,6 +23,9 @@ import (
 )
 
 // Initialize initializes the application service and registers its routes.
+//
+// valueCapturer is optional. Given one, the service hands it every application it creates or changes,
+// so the values the application's export refers to are kept where a reference finds them.
 func Initialize(
 	mux *http.ServeMux,
 	mcpServer *mcp.Server,
@@ -34,9 +37,11 @@ func Initialize(
 	serverConfigSvc serverconfig.ServerConfigService,
 	artifactLifetime artifactLifetimeResolver,
 	sharingService sharing.SharingServiceInterface,
+	valueCapturer declarativeresource.ValueCapturer,
 ) (ApplicationServiceInterface, declarativeresource.ResourceExporter, error) {
 	appService := newApplicationService(
 		inboundClient, entityService, ouService, i18nService, cryptoSvc, serverConfigSvc, artifactLifetime,
+		valueCapturer, sharingService,
 	)
 
 	// Registered before declarative resources load, because loading seeds the sharing policies those
@@ -110,4 +115,37 @@ func registerRoutes(mux *http.ServeMux, appHandler *applicationHandler) {
 		func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		}, opts2))
+
+	// Sharing policies live under the application they govern: a policy has no life of its own.
+	opts3 := middleware.CORSOptions{
+		AllowedMethods:   []string{"GET", "POST"},
+		AllowedHeaders:   middleware.DefaultAllowedHeaders,
+		AllowCredentials: true,
+		MaxAge:           600,
+	}
+	mux.HandleFunc(middleware.WithCORS("POST /applications/{id}/sharing-policies",
+		appHandler.HandleSharingPolicyPostRequest, opts3))
+	mux.HandleFunc(middleware.WithCORS("GET /applications/{id}/sharing-policies",
+		appHandler.HandleSharingPolicyListRequest, opts3))
+	// Without its own preflight route this collection falls to OPTIONS /applications/, which does
+	// not allow POST, and the browser blocks the create.
+	mux.HandleFunc(middleware.WithCORS("OPTIONS /applications/{id}/sharing-policies",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}, opts3))
+	mux.HandleFunc(middleware.WithCORS("GET /applications/{id}/overlay-rules",
+		appHandler.HandleOverlayRuleGetRequest, opts3))
+
+	opts4 := middleware.CORSOptions{
+		AllowedMethods:   []string{"GET", "PUT", "DELETE"},
+		AllowedHeaders:   middleware.DefaultAllowedHeaders,
+		AllowCredentials: true,
+		MaxAge:           600,
+	}
+	mux.HandleFunc(middleware.WithCORS("GET /applications/{id}/sharing-policies/{policyId}",
+		appHandler.HandleSharingPolicyGetRequest, opts4))
+	mux.HandleFunc(middleware.WithCORS("PUT /applications/{id}/sharing-policies/{policyId}",
+		appHandler.HandleSharingPolicyPutRequest, opts4))
+	mux.HandleFunc(middleware.WithCORS("DELETE /applications/{id}/sharing-policies/{policyId}",
+		appHandler.HandleSharingPolicyDeleteRequest, opts4))
 }

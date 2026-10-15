@@ -71,11 +71,11 @@ func declaredDocument() *DeclaredResourcePolicies {
 		ResourceName: "the-resource",
 		OwningOUID:   ownerOU,
 		Policies: []PolicyRequest{
-			{ID: declaredID, TargetOUScope: TargetOUScope{AllOUs: true}},
+			{ID: declaredID, AllUnits: allUnits()},
 			{
 				ID:             "a-second-policy",
 				InitiatingOUID: rootOU,
-				TargetOUScope:  TargetOUScope{AllChildren: true},
+				ChildUnits:     allChildren(),
 			},
 		},
 	}
@@ -90,9 +90,9 @@ func (s *DeclarativeResourceTestSuite) TestEveryPolicyInADocumentIsDeclared() {
 
 	s.Require().Len(s.declared, 2)
 	s.Equal(declaredID, s.declared[0].ID)
-	s.True(s.declared[0].TargetOUScope.AllOUs)
+	s.NotNil(s.declared[0].AllUnits)
 	s.Equal("a-second-policy", s.declared[1].ID)
-	s.True(s.declared[1].TargetOUScope.AllChildren)
+	s.Equal(allChildren(), s.declared[1].ChildUnits)
 }
 
 // A refused declaration stops startup, and says which resource and which policy, so the operator is
@@ -190,20 +190,21 @@ func (s *DeclarativeResourceTestSuite) TestADocumentSaysAbsentAndEmptyApart() {
 	var policy PolicyRequest
 	s.Require().NoError(yaml.Unmarshal([]byte(`
 id: `+declaredID+`
-targetOuScope:
-  allChildren: true
-overlayRules:
-  permissions:
-    editable: false
-    value: [ read ]
-    excludedValues: []
+childUnits:
+  mode: all
+  overlayRules:
+    permissions:
+      editable: false
+      value: [ read ]
+      excludedValues: []
 `), &policy))
 
 	s.Equal(declaredID, policy.ID)
-	s.True(policy.TargetOUScope.AllChildren)
+	s.Require().NotNil(policy.ChildUnits)
+	s.Equal(ChildUnitsAll, policy.ChildUnits.Mode)
 
-	s.Require().Len(policy.OverlayRules, 1)
-	rule := policy.OverlayRules["permissions"]
+	s.Require().Len(policy.ChildUnits.OverlayRules, 1)
+	rule := policy.ChildUnits.OverlayRules["permissions"]
 	s.False(rule.Editable)
 	s.Require().NotNil(rule.Value)
 	s.Equal([]string{"read"}, *rule.Value)
@@ -212,22 +213,46 @@ overlayRules:
 	s.Empty(*rule.ExcludedValues, "an empty exclusion list is not the same as none")
 }
 
-// Each named organization unit decides for itself whether its subtree comes too, so a document
-// says the flag per entry rather than per policy.
-func (s *DeclarativeResourceTestSuite) TestChildEntriesKeepTheirOwnSubtreeFlag() {
+// Each named unit states its own reach and carries its own terms, so a document says both per unit
+// rather than once for the policy, while a blanket section says its terms once for everything.
+func (s *DeclarativeResourceTestSuite) TestEachNamedUnitKeepsItsOwnReachAndTerms() {
 	var policy PolicyRequest
 	s.Require().NoError(yaml.Unmarshal([]byte(`
 id: `+declaredID+`
-targetOuScope:
-  childOuIds:
+childUnits:
+  mode: selected
+  units:
     - ouId: `+childOU+`
-      allChildren: true
-    - ouId: `+otherOU+`
+      reach: subtree
+    - ouId: `+nestedOwnerOU+`
+      reach: unit
+      overlayRules:
+        permissions:
+          editable: true
+otherTreeRoots:
+  mode: all
+  excludedOuIds: [ `+otherOU+` ]
+  overlayRules:
+    permissions:
+      editable: false
 `), &policy))
 
-	s.Require().Len(policy.TargetOUScope.ChildOUIDs, 2)
-	s.Equal(TargetEntry{OUID: childOU, AllChildren: true}, policy.TargetOUScope.ChildOUIDs[0])
-	s.Equal(TargetEntry{OUID: otherOU}, policy.TargetOUScope.ChildOUIDs[1])
+	s.Nil(policy.AllUnits, "a section the document leaves out is not stated")
+	s.Equal(&ChildUnitsRequest{
+		Mode: ChildUnitsSelected,
+		Units: []ChildUnitRequest{
+			{OUID: childOU, Reach: ReachSubtree},
+			{
+				OUID: nestedOwnerOU, Reach: ReachUnit,
+				OverlayRules: map[string]OverlayRule{"permissions": {Editable: true}},
+			},
+		},
+	}, policy.ChildUnits)
+	s.Equal(&OtherTreeRootsRequest{
+		Mode:          OtherTreeRootsAll,
+		ExcludedOUIDs: []string{otherOU},
+		OverlayRules:  map[string]OverlayRule{"permissions": {Editable: false}},
+	}, policy.OtherTreeRoots)
 }
 
 // assertParseFailure is what a consumer's parser returns when a document is not readable.

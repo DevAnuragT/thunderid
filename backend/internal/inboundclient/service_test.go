@@ -22,6 +22,7 @@ import (
 	"github.com/thunder-id/thunderid/internal/cimd"
 	"github.com/thunder-id/thunderid/internal/entityprovider"
 	entitytypepkg "github.com/thunder-id/thunderid/internal/entitytype"
+	entitytypemodel "github.com/thunder-id/thunderid/internal/entitytype/model"
 	flowmgt "github.com/thunder-id/thunderid/internal/flow/mgt"
 	inboundmodel "github.com/thunder-id/thunderid/internal/inboundclient/model"
 	"github.com/thunder-id/thunderid/internal/sharing"
@@ -94,14 +95,14 @@ func newServiceWithCert(certService cert.CertificateServiceInterface) *inboundCl
 		nil, transaction.NewNoOpTransactioner(), certService, nil, nil, nil, nil, nil, nil, nil,
 		noopCIMDService{}, nil, nil,
 	)
-	return svc.(*inboundClientService)
+	return svc
 }
 
 func newServiceWithEntityType(et entitytypepkg.EntityTypeServiceInterface) *inboundClientService {
 	svc := newInboundClientService(
 		nil, transaction.NewNoOpTransactioner(), nil, nil, nil, nil, nil, et, nil, nil, noopCIMDService{}, nil, nil,
 	)
-	return svc.(*inboundClientService)
+	return svc
 }
 
 // userAttrProfile builds an OAuth profile with the three user attribute allow-lists populated.
@@ -438,7 +439,7 @@ func (suite *InboundClientServiceTestSuite) TestValidateCertificateInput_Invalid
 func (suite *InboundClientServiceTestSuite) TestCreateCertificate_Nil() {
 	svc := newServiceWithCert(certmock.NewCertificateServiceInterfaceMock(suite.T()))
 
-	out, vErr, opErr := svc.createCertificate(context.Background(), "ref-1", nil)
+	out, opErr, vErr := svc.createCertificate(context.Background(), "ref-1", nil)
 
 	suite.Nil(out)
 	suite.Nil(vErr)
@@ -452,7 +453,7 @@ func (suite *InboundClientServiceTestSuite) TestCreateCertificate_Success() {
 	svc := newServiceWithCert(mockCert)
 
 	in := &inboundmodel.Certificate{Type: cert.CertificateTypeJWKS, Value: `{}`}
-	out, vErr, opErr := svc.createCertificate(context.Background(), "ref-1", in)
+	out, opErr, vErr := svc.createCertificate(context.Background(), "ref-1", in)
 
 	suite.Nil(vErr)
 	suite.Nil(opErr)
@@ -464,7 +465,7 @@ func (suite *InboundClientServiceTestSuite) TestCreateCertificate_InvalidInput()
 	svc := newServiceWithCert(certmock.NewCertificateServiceInterfaceMock(suite.T()))
 
 	in := &inboundmodel.Certificate{Type: cert.CertificateTypeJWKSURI, Value: "not-a-uri"}
-	out, vErr, opErr := svc.createCertificate(context.Background(), "ref-1", in)
+	out, opErr, vErr := svc.createCertificate(context.Background(), "ref-1", in)
 
 	suite.Nil(out)
 	suite.Nil(opErr)
@@ -478,7 +479,7 @@ func (suite *InboundClientServiceTestSuite) TestCreateCertificate_ServiceError()
 	svc := newServiceWithCert(mockCert)
 
 	in := &inboundmodel.Certificate{Type: cert.CertificateTypeJWKS, Value: `{}`}
-	out, vErr, opErr := svc.createCertificate(context.Background(), "ref-1", in)
+	out, opErr, vErr := svc.createCertificate(context.Background(), "ref-1", in)
 
 	suite.Nil(out)
 	suite.Nil(vErr)
@@ -568,7 +569,7 @@ func (suite *InboundClientServiceTestSuite) TestSyncCertificate_NoOp_NoExistingN
 		Return(nil, &cert.ErrorCertificateNotFound)
 	svc := newServiceWithCert(mockCert)
 
-	out, vErr, opErr := svc.syncCertificate(context.Background(), "ref-1", nil)
+	out, opErr, vErr := svc.syncCertificate(context.Background(), "ref-1", nil)
 
 	suite.Nil(out)
 	suite.Nil(vErr)
@@ -584,7 +585,7 @@ func (suite *InboundClientServiceTestSuite) TestSyncCertificate_CreateWhenAbsent
 		Return(&cert.Certificate{}, nil)
 	svc := newServiceWithCert(mockCert)
 
-	out, vErr, opErr := svc.syncCertificate(context.Background(), "ref-1",
+	out, opErr, vErr := svc.syncCertificate(context.Background(), "ref-1",
 		&inboundmodel.Certificate{Type: cert.CertificateTypeJWKS, Value: `{}`})
 
 	suite.Nil(vErr)
@@ -601,7 +602,7 @@ func (suite *InboundClientServiceTestSuite) TestSyncCertificate_UpdateWhenPresen
 		Return(&cert.Certificate{}, nil)
 	svc := newServiceWithCert(mockCert)
 
-	out, vErr, opErr := svc.syncCertificate(context.Background(), "ref-1",
+	out, opErr, vErr := svc.syncCertificate(context.Background(), "ref-1",
 		&inboundmodel.Certificate{Type: cert.CertificateTypeJWKS, Value: `{}`})
 
 	suite.Nil(vErr)
@@ -619,7 +620,7 @@ func (suite *InboundClientServiceTestSuite) TestSyncCertificate_DeleteWhenInputE
 		Return(nil)
 	svc := newServiceWithCert(mockCert)
 
-	out, vErr, opErr := svc.syncCertificate(context.Background(), "ref-1", nil)
+	out, opErr, vErr := svc.syncCertificate(context.Background(), "ref-1", nil)
 
 	suite.Nil(out)
 	suite.Nil(vErr)
@@ -633,7 +634,7 @@ func (suite *InboundClientServiceTestSuite) TestSyncCertificate_ValidationError(
 		Return(nil, &cert.ErrorCertificateNotFound)
 	svc := newServiceWithCert(mockCert)
 
-	out, vErr, opErr := svc.syncCertificate(context.Background(), "ref-1",
+	out, opErr, vErr := svc.syncCertificate(context.Background(), "ref-1",
 		&inboundmodel.Certificate{Type: "bogus", Value: "x"})
 
 	suite.Nil(out)
@@ -1916,6 +1917,38 @@ func (suite *InboundClientServiceTestSuite) TestResolveOAuthTokens_CarriesDefaul
 
 // ----- validateRedirectURIs error branches -----
 
+// A redirect URI that is wholly a variable reference is no address, so a deployment that resolves
+// references refuses one typed in.
+func (suite *InboundClientServiceTestSuite) TestValidateRedirectURIs_VariableReferenceRefused() {
+	p := &providers.OAuthProfile{
+		RedirectURIs: []string{"var:APPLICATION_ORDERS_REDIRECT_URIS"},
+		GrantTypes:   []string{"authorization_code"},
+	}
+	service := &inboundClientService{}
+	assert.ErrorIs(suite.T(), validateRedirectURIs(service.profileToValidate(p)), ErrOAuthInvalidRedirectURI)
+}
+
+// A control plane keeps a reference to the redirect URIs each deployment holds, so it checks the
+// reference as a valid address and leaves the profile it stores as it was. A secret reference, or one
+// inside a longer value, is still checked as an address.
+func (suite *InboundClientServiceTestSuite) TestValidateRedirectURIs_ControlPlaneKeepsAVariableReference() {
+	service := &inboundClientService{}
+	KeepingValueReferences()(service)
+	p := &providers.OAuthProfile{
+		RedirectURIs: []string{"var:APPLICATION_ORDERS_REDIRECT_URIS", "https://app/cb"},
+		GrantTypes:   []string{"authorization_code"},
+	}
+
+	assert.NoError(suite.T(), validateRedirectURIs(service.profileToValidate(p)))
+	assert.Equal(suite.T(), "var:APPLICATION_ORDERS_REDIRECT_URIS", p.RedirectURIs[0], "the stored profile changed")
+
+	for _, uri := range []string{"sec:APPLICATION_ORDERS_REDIRECT_URIS", "var:NOT A NAME"} {
+		p.RedirectURIs = []string{uri}
+		assert.ErrorIs(suite.T(), validateRedirectURIs(service.profileToValidate(p)), ErrOAuthInvalidRedirectURI, uri)
+	}
+	assert.Nil(suite.T(), service.profileToValidate(nil))
+}
+
 func (suite *InboundClientServiceTestSuite) TestValidateRedirectURIs_SchemeWildcardRejected() {
 	p := &providers.OAuthProfile{
 		RedirectURIs: []string{"htt*://app/cb"},
@@ -2850,7 +2883,7 @@ func (suite *InboundClientServiceTestSuite) TestRevalidateFKs_FlowMismatchSurfac
 	flowMgt.EXPECT().GetReachableCallTargets(mock.Anything, "auth").Return(
 		[]flowmgt.CallTarget{{FlowID: "reg-b", FlowType: providers.FlowTypeRegistration}}, nil)
 	svc := newInboundClientService(store, transaction.NewNoOpTransactioner(),
-		nil, nil, nil, nil, flowMgt, nil, nil, nil, noopCIMDService{}, nil, nil).(*inboundClientService)
+		nil, nil, nil, nil, flowMgt, nil, nil, nil, noopCIMDService{}, nil, nil)
 
 	err := svc.RevalidateFKs(context.Background(), "app-1")
 	var fm *FlowMismatchError
@@ -3823,7 +3856,7 @@ func (suite *InboundClientServiceTestSuite) TestValidateReferencedFlows_WalkerSe
 
 func subjectAttrFilter() entitytypepkg.AttributeFilter {
 	return entitytypepkg.AttributeFilter{
-		AllowNonCredential: true, RequiredOnly: true, UniqueOnly: true, Type: "string",
+		AllowNonCredential: true, RequiredOnly: true, UniqueOnly: true,
 	}
 }
 
@@ -3866,13 +3899,40 @@ func (suite *InboundClientServiceTestSuite) TestValidateSubjectAttributeMapping_
 }
 
 func (suite *InboundClientServiceTestSuite) TestValidateSubjectAttributeMapping_Valid() {
-	us := entitytypemock.NewEntityTypeServiceInterfaceMock(suite.T())
-	us.EXPECT().GetAttributes(mock.Anything, entitytypepkg.TypeCategoryUser, "employee", subjectAttrFilter()).
-		Return([]entitytypepkg.AttributeInfo{
-			{Attribute: "email", Unique: true, Required: true, Type: "string"}}, nil)
-	svc := &inboundClientService{entityType: us, logger: log.GetLogger()}
-	assert.NoError(suite.T(), svc.validateSubjectAttributeMapping(
-		context.Background(), map[string]string{"employee": "email"}, []string{"employee"}))
+	for _, kind := range []string{entitytypemodel.TypeString, entitytypemodel.TypeEmail, entitytypemodel.TypeMobile} {
+		suite.Run(kind, func() {
+			schema, err := entitytypemodel.CompileSchema(
+				json.RawMessage(`{"contact":{"type":"` + kind + `","required":true,"unique":true}}`))
+			suite.Require().NoError(err)
+			us := entitytypemock.NewEntityTypeServiceInterfaceMock(suite.T())
+			us.EXPECT().GetAttributes(mock.Anything, entitytypepkg.TypeCategoryUser, "employee", subjectAttrFilter()).
+				Return(schema.GetAttributes(subjectAttrFilter()), nil)
+			svc := &inboundClientService{entityType: us, logger: log.GetLogger()}
+			assert.NoError(suite.T(), svc.validateSubjectAttributeMapping(
+				context.Background(), map[string]string{"employee": "contact"}, []string{"employee"}))
+		})
+	}
+}
+
+func (suite *InboundClientServiceTestSuite) TestValidateSubjectAttributeMapping_RejectsIneligibleTypesAndConstraints() {
+	for _, definition := range []string{
+		`{"type":"number","required":true,"unique":true}`,
+		`{"type":"email","required":false,"unique":true}`,
+		`{"type":"mobile","required":true,"unique":false}`,
+		`{"type":"string","required":true,"unique":true,"credential":true}`,
+	} {
+		suite.Run(definition, func() {
+			schema, err := entitytypemodel.CompileSchema(json.RawMessage(`{"contact":` + definition + `}`))
+			suite.Require().NoError(err)
+			us := entitytypemock.NewEntityTypeServiceInterfaceMock(suite.T())
+			us.EXPECT().GetAttributes(mock.Anything, entitytypepkg.TypeCategoryUser, "employee", subjectAttrFilter()).
+				Return(schema.GetAttributes(subjectAttrFilter()), nil)
+			svc := &inboundClientService{entityType: us, logger: log.GetLogger()}
+			assert.ErrorIs(suite.T(), svc.validateSubjectAttributeMapping(
+				context.Background(), map[string]string{"employee": "contact"}, []string{"employee"}),
+				ErrFKInvalidSubjectAttributeMapping)
+		})
+	}
 }
 
 func (suite *InboundClientServiceTestSuite) TestValidateSubjectAttributeMapping_SchemaLookupError() {

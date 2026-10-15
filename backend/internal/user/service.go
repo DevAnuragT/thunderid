@@ -20,6 +20,7 @@ import (
 	"github.com/thunder-id/thunderid/internal/entitytype"
 	oupkg "github.com/thunder-id/thunderid/internal/ou"
 	serverconst "github.com/thunder-id/thunderid/internal/system/constants"
+	declarativeresource "github.com/thunder-id/thunderid/internal/system/declarative_resource"
 	"github.com/thunder-id/thunderid/internal/system/log"
 	"github.com/thunder-id/thunderid/internal/system/resourcedependency"
 	"github.com/thunder-id/thunderid/internal/system/security"
@@ -63,6 +64,7 @@ type userService struct {
 	entityTypeService  entitytype.EntityTypeServiceInterface
 	uuidGenerator      func() (string, error)
 	dependencyRegistry resourcedependency.Registry
+	valueCapturer      declarativeresource.ValueCapturer
 }
 
 // newUserService creates a new instance of userService with injected dependencies.
@@ -71,6 +73,7 @@ func newUserService(
 	entityService entity.EntityServiceInterface,
 	ouService oupkg.OrganizationUnitServiceInterface,
 	entityTypeService entitytype.EntityTypeServiceInterface,
+	valueCapturer declarativeresource.ValueCapturer,
 ) UserServiceInterface {
 	return &userService{
 		authzService:      authzService,
@@ -78,6 +81,7 @@ func newUserService(
 		ouService:         ouService,
 		entityTypeService: entityTypeService,
 		uuidGenerator:     utils.GenerateUUIDv7,
+		valueCapturer:     valueCapturer,
 	}
 }
 
@@ -262,7 +266,8 @@ func (us *userService) GetUsersByPath(
 			for _, u := range fetchedUsers {
 				userTypes = append(userTypes, u.Type)
 			}
-			displayAttrPaths := ResolveDisplayAttributePaths(ctx, userTypes, us.entityTypeService, logger)
+			displayAttrPaths := entitytype.ResolveDisplayAttributePaths(
+				ctx, entitytype.TypeCategoryUser, userTypes, us.entityTypeService, logger)
 
 			users = make([]providers.User, len(ouResponse.Users))
 			for i, ouUser := range ouResponse.Users {
@@ -305,6 +310,9 @@ func (us *userService) CreateUser(
 	if user == nil {
 		return nil, &ErrorInvalidRequestFormat
 	}
+	if user.LinkedAccount != nil && (user.LinkedAccount.IdpID == "" || user.LinkedAccount.Sub == "") {
+		return nil, &ErrorInvalidRequestFormat
+	}
 
 	// Check if caller is authorized to create users in the target OU.
 	if svcErr := us.checkUserAccess(ctx, security.ActionCreateUser, user.OUID, ""); svcErr != nil {
@@ -327,7 +335,8 @@ func (us *userService) CreateUser(
 	}
 
 	e := userToEntity(user)
-	created, err := us.entityService.CreateEntity(ctx, e, nil)
+	submitted := user.Attributes
+	created, err := us.entityService.CreateEntity(ctx, e, nil, user.LinkedAccount)
 	if err != nil {
 		if svcErr := mapEntityError(err); svcErr != nil {
 			return nil, svcErr
@@ -337,6 +346,7 @@ func (us *userService) CreateUser(
 
 	// Sync cleaned attributes back — entity service removed credential fields from Attributes.
 	user.Attributes = created.Attributes
+	us.captureSubmittedCredentials(ctx, user, submitted)
 
 	logger.Debug(ctx, "Successfully created user", log.MaskedString(log.LoggerKeyUserID, user.ID))
 	return user, nil
@@ -409,8 +419,8 @@ func (us *userService) GetUser(
 	}
 
 	if includeDisplay {
-		displayAttrPaths := ResolveDisplayAttributePaths(
-			ctx, []string{user.Type}, us.entityTypeService, logger)
+		displayAttrPaths := entitytype.ResolveDisplayAttributePaths(
+			ctx, entitytype.TypeCategoryUser, []string{user.Type}, us.entityTypeService, logger)
 		user.Display = utils.ResolveDisplay(
 			user.ID, user.Type, user.Attributes, displayAttrPaths)
 
@@ -779,6 +789,7 @@ func (us *userService) UpdateUserCredentials(
 	logger.Debug(ctx, "Successfully updated user credentials",
 		log.MaskedString(log.LoggerKeyUserID, userID),
 		log.Int("credentialTypesCount", len(credentialsMap)))
+	us.captureCredentials(ctx, &existingUser, existingUser.Attributes, plaintextCreds)
 	return nil
 }
 
@@ -990,8 +1001,8 @@ func (us *userService) populateUserDisplayNames(ctx context.Context, users []pro
 		userTypes = append(userTypes, u.Type)
 	}
 
-	displayAttrPaths := ResolveDisplayAttributePaths(
-		ctx, userTypes, us.entityTypeService, logger)
+	displayAttrPaths := entitytype.ResolveDisplayAttributePaths(
+		ctx, entitytype.TypeCategoryUser, userTypes, us.entityTypeService, logger)
 
 	// Resolve display for each user.
 	for i := range users {

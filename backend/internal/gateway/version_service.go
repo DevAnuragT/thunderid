@@ -12,9 +12,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/thunder-id/thunderid/internal/system/cmodels"
 	"github.com/thunder-id/thunderid/internal/system/config"
+	declarativeresource "github.com/thunder-id/thunderid/internal/system/declarative_resource"
 	"github.com/thunder-id/thunderid/internal/system/export"
 	"github.com/thunder-id/thunderid/internal/system/log"
 	tidcommon "github.com/thunder-id/thunderid/pkg/thunderidengine/common"
@@ -28,6 +31,10 @@ const minHashPrefix = 7
 
 // hashPrefix is what a version's hash, or a prefix of it, looks like.
 var hashPrefix = regexp.MustCompile(`^[0-9a-f]{` + strconv.Itoa(minHashPrefix) + `,64}$`)
+
+// currentVersion names the configuration as it stands, read but not captured. Only a read of one
+// version takes it: an apply, a revert and a diff need a version that was kept.
+const currentVersion = "current"
 
 // VersionServiceInterface captures this deployment's configuration as versions and applies them to
 // the gateways it administers.
@@ -56,10 +63,52 @@ type versionService struct {
 	exporter export.ExportServiceInterface
 	client   gatewayClientInterface
 	logger   *log.Logger
+	applying gatewayLocks
+}
+
+// gatewayLocks runs one apply or revert at a time per gateway on this node, so the choice an apply
+// keeps and the import it sends are never interleaved with another apply's to the same gateway. Its
+// zero value is ready to use. A gateway's lock is kept only while an apply holds it or waits for it,
+// so the map does not grow with every gateway ever applied to, a removed one included.
+type gatewayLocks struct {
+	mu    sync.Mutex
+	locks map[string]*gatewayLock
+}
+
+// gatewayLock is one gateway's lock and how many applies hold it or wait for it.
+type gatewayLock struct {
+	sync.Mutex
+	users int
+}
+
+// lock waits for the gateway's other apply to finish and returns the unlock.
+func (l *gatewayLocks) lock(gatewayID string) func() {
+	l.mu.Lock()
+	if l.locks == nil {
+		l.locks = make(map[string]*gatewayLock)
+	}
+	held, ok := l.locks[gatewayID]
+	if !ok {
+		held = &gatewayLock{}
+		l.locks[gatewayID] = held
+	}
+	held.users++
+	l.mu.Unlock()
+
+	held.Lock()
+	return func() {
+		held.Unlock()
+		l.mu.Lock()
+		held.users--
+		if held.users == 0 {
+			delete(l.locks, gatewayID)
+		}
+		l.mu.Unlock()
+	}
 }
 
 func newVersionService(gateways storeInterface, versions versionStoreInterface,
-	exporter export.ExportServiceInterface, client gatewayClientInterface) VersionServiceInterface {
+	exporter export.ExportServiceInterface, client gatewayClientInterface) *versionService {
 	return &versionService{
 		gateways: gateways,
 		versions: versions,
@@ -87,8 +136,7 @@ func configurationExport() *export.ExportRequest {
 		Users: all, Groups: all,
 		OrganizationUnits: all, ResourceServers: all, Roles: all, Flows: all, Translations: all,
 		Layouts: all, Themes: all, ServerConfigs: all, CredentialConfigurations: all,
-		PresentationDefinitions: all,
-		Options:                 &export.ExportOptions{IncludeDependencies: true, Format: "yaml"},
+		PresentationDefinitions: all, Options: &export.ExportOptions{IncludeDependencies: true, Format: "yaml"},
 	}
 }
 
@@ -100,7 +148,7 @@ func (s *versionService) Capture(ctx context.Context, req CaptureRequest) (*Vers
 	// A resource the export could not write, such as a user without a username, is left out of the
 	// version as the export leaves it out of its own answer, and is named in the capture's answer so
 	// the administrator sees what the version is missing.
-	var skipped []export.ExportError
+	var skipped []declarativeresource.ExportError
 	if exported.Summary != nil {
 		skipped = exported.Summary.Errors
 	}
@@ -110,10 +158,7 @@ func (s *versionService) Capture(ctx context.Context, req CaptureRequest) (*Vers
 			log.String("error", failed.Error))
 	}
 
-	documents := make([]string, 0, len(exported.Files))
-	for _, file := range exported.Files {
-		documents = append(documents, strings.TrimSpace(file.Content))
-	}
+	documents := documentsOf(exported)
 
 	sealed := ""
 	if exported.EnvFile != nil {
@@ -188,7 +233,42 @@ func (s *versionService) ListVersions(ctx context.Context) ([]Version, *tidcommo
 }
 
 func (s *versionService) GetVersion(ctx context.Context, ref string) (*Version, *tidcommon.ServiceError) {
-	return s.resolve(ctx, ref)
+	if strings.TrimSpace(ref) == currentVersion {
+		return s.current(ctx)
+	}
+	version, svcErr := s.resolve(ctx, ref)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+	read := *version
+	read.References = referencesOf(version.Resources)
+	return &read, nil
+}
+
+// current reads the configuration as it stands, the way a capture reads it, without keeping it. Its
+// references say what each value is for as soon as a resource is written, before any capture, and its
+// hash is the one a capture would give it.
+func (s *versionService) current(ctx context.Context) (*Version, *tidcommon.ServiceError) {
+	exported, svcErr := s.exporter.ExportResources(ctx, configurationExport())
+	if svcErr != nil {
+		return nil, svcErr
+	}
+	content := joinBundle(documentsOf(exported))
+	version := &Version{Hash: versionHash(content), CreatedAt: time.Now().UTC(), Resources: content,
+		References: referencesOf(content)}
+	if exported.Summary != nil {
+		version.Skipped = exported.Summary.Errors
+	}
+	return version, nil
+}
+
+// documentsOf returns each file an export wrote as one document.
+func documentsOf(exported *export.ExportResponse) []string {
+	documents := make([]string, 0, len(exported.Files))
+	for _, file := range exported.Files {
+		documents = append(documents, strings.TrimSpace(file.Content))
+	}
+	return documents
 }
 
 // resolve reads the version a reference names: its hash, a prefix of at least minHashPrefix of its
@@ -261,7 +341,11 @@ func (s *versionService) Diff(ctx context.Context, gatewayID, ref string) (*Diff
 	if svcErr != nil {
 		return nil, svcErr
 	}
-	_, diff, svcErr := s.plan(ctx, gatewayID, target)
+	excluded, svcErr := s.excluded(ctx, gatewayID)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+	_, diff, svcErr := s.plan(ctx, gatewayID, target, excluded)
 	return diff, svcErr
 }
 
@@ -275,7 +359,7 @@ func (s *versionService) Apply(ctx context.Context, gatewayID string,
 	if svcErr != nil {
 		return nil, svcErr
 	}
-	return s.write(ctx, gw, target, req.DryRun, false)
+	return s.write(ctx, gw, target, req.DryRun, false, req.Selection)
 }
 
 func (s *versionService) Revert(ctx context.Context, gatewayID string,
@@ -296,12 +380,15 @@ func (s *versionService) Revert(ctx context.Context, gatewayID string,
 	if svcErr != nil {
 		return nil, svcErr
 	}
-	return s.write(ctx, gw, target, req.DryRun, true)
+	return s.write(ctx, gw, target, req.DryRun, true, nil)
 }
 
 func (s *versionService) Forget(ctx context.Context, gatewayID string) {
 	if err := s.versions.DeleteApplied(ctx, gatewayID); err != nil {
 		s.logger.Warn(ctx, "Failed to forget what a removed gateway held", log.Error(err))
+	}
+	if err := s.versions.DeleteExcluded(ctx, gatewayID); err != nil {
+		s.logger.Warn(ctx, "Failed to forget what a removed gateway left alone", log.Error(err))
 	}
 }
 
@@ -309,12 +396,35 @@ func (s *versionService) Forget(ctx context.Context, gatewayID string) {
 //
 // After an apply, the version the gateway held becomes the one a revert returns to. After a revert,
 // the version reverted from takes that place, so a revert can itself be undone.
+//
+// A selection, when given, replaces the gateway's standing choice for the changes it was offered,
+// and an apply that is not a dry run keeps it for the next. Either way the resources left out are
+// neither written nor removed.
 func (s *versionService) write(ctx context.Context, gw *Gateway, target *Version,
-	dryRun, isRevert bool) (*ApplyResult, *tidcommon.ServiceError) {
-	applied, diff, svcErr := s.plan(ctx, gw.ID, target)
+	dryRun, isRevert bool, selection *[]string) (*ApplyResult, *tidcommon.ServiceError) {
+	if !dryRun {
+		defer s.applying.lock(gw.ID)()
+	}
+	excluded, svcErr := s.excluded(ctx, gw.ID)
 	if svcErr != nil {
 		return nil, svcErr
 	}
+	applied, diff, svcErr := s.plan(ctx, gw.ID, target, excluded)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+	before := excluded
+	var exclude []excludedResource
+	var include []string
+	if selection != nil {
+		if !validSelection(diff.Changes, excluded, *selection) {
+			return nil, &ErrorInvalidSelection
+		}
+		excluded, exclude, include = nextExclusions(excluded, diff.Changes, *selection)
+		diff.Changes = markExcluded(diff.Changes, excluded)
+		diff.Summary = summarize(diff.Changes)
+	}
+	content := contentWithout(target.Resources, excluded)
 
 	key, svcErr := s.reveal(ctx, gw.Key)
 	if svcErr != nil {
@@ -322,7 +432,7 @@ func (s *versionService) write(ctx context.Context, gw *Gateway, target *Version
 	}
 	// A version names values the gateway holds rather than carrying them, so one the gateway lacks
 	// would leave a resource unusable once applied. A dry run reports them; an apply is refused.
-	missing, svcErr := s.missingValues(ctx, gw, key, target)
+	missing, svcErr := s.missingValues(ctx, gw, key, content)
 	if svcErr != nil {
 		return nil, svcErr
 	}
@@ -338,8 +448,22 @@ func (s *versionService) write(ctx context.Context, gw *Gateway, target *Version
 		variables = opened
 	}
 
+	// The choice is kept before the import, so what is recorded never trails what the gateway was
+	// sent. Everything that can refuse the apply without reaching the gateway has run by now, and an
+	// import the gateway is known to have written nothing of puts the choice back, so a refused apply
+	// leaves it as it was. Any other failure, a timeout or a connection lost after the request went
+	// out, may have reached the gateway, so the choice stays: putting it back would have later diffs
+	// treat what the gateway received as left alone, and never remove it. The same holds once the
+	// import succeeded and recording the version then fails.
+	kept := !dryRun && len(exclude)+len(include) > 0
+	if kept {
+		if err := s.versions.SetExcluded(ctx, gw.ID, exclude, include); err != nil {
+			s.logger.Error(ctx, "Failed to keep what the gateway leaves alone", log.Error(err))
+			return nil, &tidcommon.InternalServerError
+		}
+	}
 	request := gatewayImportRequest{
-		Content:   target.Resources,
+		Content:   content,
 		Variables: variables,
 		DryRun:    dryRun,
 		Options:   gatewayImportOptions{Upsert: true, ContinueOnError: true, Target: "runtime"},
@@ -349,6 +473,9 @@ func (s *versionService) write(ctx context.Context, gw *Gateway, target *Version
 	if err != nil {
 		s.logger.Error(ctx, "Failed to apply a version to a gateway", log.String("gatewayId", gw.ID),
 			log.Int("version", target.Seq), log.Error(err))
+		if kept && errors.Is(err, errImportNotWritten) {
+			s.restoreExclusions(ctx, gw.ID, before, exclude, include)
+		}
 		return nil, &ErrorGatewayUnreachable
 	}
 
@@ -401,22 +528,48 @@ func (s *versionService) write(ctx context.Context, gw *Gateway, target *Version
 	return result, nil
 }
 
-// missingValues returns the variables and secrets a version refers to that a gateway does not hold.
+// restoreExclusions undoes a kept choice when its import wrote nothing: what it began leaving alone is
+// offered again, and what it took back is left alone again. A failure is logged and left; the apply
+// it belonged to is already failing, and the next apply with a selection sets the choice afresh.
+func (s *versionService) restoreExclusions(ctx context.Context, gatewayID string, before []excludedResource,
+	exclude []excludedResource, include []string) {
+	takenBack := toSet(include)
+	reexclude := make([]excludedResource, 0, len(include))
+	for _, resource := range before {
+		if takenBack[resource.Key] {
+			reexclude = append(reexclude, resource)
+		}
+	}
+	offerAgain := make([]string, 0, len(exclude))
+	for _, resource := range exclude {
+		offerAgain = append(offerAgain, resource.Key)
+	}
+	if err := s.versions.SetExcluded(ctx, gatewayID, reexclude, offerAgain); err != nil {
+		s.logger.Error(ctx, "Failed to put back what the gateway leaves alone after a failed apply",
+			log.String("gatewayId", gatewayID), log.Error(err))
+	}
+}
+
+// missingValues returns the variables and secrets the content applied refers to that a gateway does
+// not hold. A resource left alone is not applied, so what it refers to is not needed.
 func (s *versionService) missingValues(ctx context.Context, gw *Gateway, key string,
-	target *Version) (*MissingValues, *tidcommon.ServiceError) {
-	variables, secrets := referencesIn(target.Resources)
+	content string) (*MissingValues, *tidcommon.ServiceError) {
+	variables, secrets := referencesIn(content)
 	missing, err := s.client.UnsetValues(ctx, gw, key, variables, secrets)
 	if err != nil {
 		s.logger.Error(ctx, "Failed to read which values a gateway holds", log.String("gatewayId", gw.ID),
 			log.Error(err))
 		return nil, &ErrorGatewayUnreachable
 	}
+	if !missing.empty() {
+		missing.References = referencesTo(content, missing)
+	}
 	return missing, nil
 }
 
-// plan diffs a version against what a gateway holds.
-func (s *versionService) plan(ctx context.Context, gatewayID string,
-	target *Version) (*AppliedVersion, *Diff, *tidcommon.ServiceError) {
+// plan diffs a version against what a gateway holds, flagging the changes it is set to leave alone.
+func (s *versionService) plan(ctx context.Context, gatewayID string, target *Version,
+	excluded []excludedResource) (*AppliedVersion, *Diff, *tidcommon.ServiceError) {
 	applied, err := s.versions.GetApplied(ctx, gatewayID)
 	if err != nil {
 		s.logger.Error(ctx, "Failed to read what the gateway holds", log.Error(err))
@@ -442,9 +595,20 @@ func (s *versionService) plan(ctx context.Context, gatewayID string,
 		held = parseBundle(heldVersion.Resources)
 		diff.FromVersion = heldVersion.Hash
 	}
-	diff.Changes = diffBundles(held, parseBundle(target.Resources))
+	diff.Changes = markExcluded(diffBundles(held, parseBundle(target.Resources)), excluded)
 	diff.Summary = summarize(diff.Changes)
 	return applied, diff, nil
+}
+
+// excluded reads the resources a gateway is set to leave alone.
+func (s *versionService) excluded(ctx context.Context,
+	gatewayID string) ([]excludedResource, *tidcommon.ServiceError) {
+	excluded, err := s.versions.GetExcluded(ctx, gatewayID)
+	if err != nil {
+		s.logger.Error(ctx, "Failed to read what the gateway leaves alone", log.Error(err))
+		return nil, &tidcommon.InternalServerError
+	}
+	return excluded, nil
 }
 
 // gateway reads a gateway with its stored key.
@@ -469,12 +633,12 @@ func findGateway(ctx context.Context, gateways storeInterface, logger *log.Logge
 	return gw, nil
 }
 
-// deletionsOf turns removed resources into the deletions an import takes. A resource without an id
-// cannot be named to the gateway, so it is left in place.
+// deletionsOf turns removed resources into the deletions an import takes, except those the gateway
+// leaves alone. A resource without an id cannot be named to the gateway, so it is left in place.
 func deletionsOf(changes []Change) []gatewayDeletion {
 	var deletions []gatewayDeletion
 	for _, change := range changes {
-		if change.Change == ChangeDeleted && change.ID != "" {
+		if change.Change == ChangeDeleted && change.ID != "" && !change.Excluded {
 			deletions = append(deletions, gatewayDeletion{ResourceType: change.ResourceType, ID: change.ID})
 		}
 	}

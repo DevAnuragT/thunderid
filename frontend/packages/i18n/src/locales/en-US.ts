@@ -81,6 +81,7 @@ const translations = {
     'status.loading': 'Loading...',
     'status.saving': 'Saving...',
     'status.sending': 'Sending...',
+    'status.creating': 'Creating...',
     'status.deleting': 'Deleting...',
     'status.success': 'Success',
     'status.error': 'Error',
@@ -146,6 +147,26 @@ const translations = {
     'errors.FET-1087': 'The application could not be deleted. Please try again.',
     'errors.FET-1088': 'This application authenticates without a client secret, so there is none to regenerate.',
     'errors.FET-1089': 'The client secret could not be regenerated. Please try again.',
+    'errors.FET-1098': 'This role assignment cannot be removed in its current state.',
+    'errors.FET-1099': 'The role assignment could not be removed. Please try again.',
+    'errors.FET-1100': 'This role cannot be deleted in its current state.',
+    'errors.FET-1101': 'The role could not be deleted. Please try again.',
+    'errors.FET-1102': 'The permissions of this role cannot be changed in its current state.',
+    'errors.FET-1103': 'The permissions of this role could not be changed. Please try again.',
+    'errors.FET-1104': 'This group cannot be deleted in its current state.',
+    'errors.FET-1105': 'The group could not be deleted. Please try again.',
+    'errors.FET-1106': 'This member cannot be removed from the group in its current state.',
+    'errors.FET-1107': 'The member could not be removed from the group. Please try again.',
+    'errors.FET-1108': 'This action cannot be deleted in its current state.',
+    'errors.FET-1109': 'The action could not be deleted. Please try again.',
+    'errors.FET-1110': 'The permissions supplied for this role are not valid. Refresh the page and try again.',
+    'errors.FET-1111': 'A required value for this change is missing. Refresh the page and try again.',
+    'errors.RVS-1001':
+      'This change would revoke access through {{entries}} entries, more than the {{max}} allowed for one change.',
+
+    // Shared, since role changes expand a group's members and raise it too.
+    'errors.GRP-1017':
+      "This group's members are nested more than {{max}} levels deep, so the change cannot be applied.",
 
     // External links
     learnMore: 'Learn more',
@@ -680,6 +701,9 @@ const translations = {
     'pages.flows': 'Flows',
     'pages.design': 'Design',
     'pages.translations': 'Translations',
+    'pages.notifications': 'Notifications',
+    'pages.emailTemplates': 'Email Templates',
+    'pages.smsTemplates': 'SMS Templates',
     'pages.settings': 'Settings',
     'breadcrumb.console': 'Console',
   },
@@ -721,6 +745,9 @@ const translations = {
     userDeletedSuccess: 'User deleted successfully',
     'errors.failed.title': 'Error',
     'errors.failed.description': 'An error occurred. Please try again.',
+    'errors.onboardingFlowUnavailable.title': 'User onboarding is unavailable',
+    'errors.onboardingFlowUnavailable.description':
+      'The user onboarding flow could not be resolved. Check that a user onboarding flow is configured for this deployment and that the flow it names exists.',
 
     // Edit page
     'manageUser.title': 'Manage User',
@@ -745,7 +772,6 @@ const translations = {
     'delete.success': 'User deleted successfully.',
     'delete.error': 'Failed to delete user. Please try again.',
     'delete.usages.loading': 'Checking affected resources…',
-    'delete.usages.none': 'No agents currently list this user as their owner.',
     'delete.usages.title': 'The following agents list this user as their owner:',
     'delete.usages.more': '+{{count}} more',
     'delete.blocking.title': 'This user cannot be deleted until the following agents are reassigned or removed:',
@@ -816,14 +842,25 @@ const translations = {
     unique: 'Unique',
     removeProperty: 'Remove property',
     regexPattern: 'Regular Expression Pattern (Optional)',
+    contactRegexPattern: 'Regular Expression Pattern',
+    'validationErrors.emailRegexRequired': 'Enter a regular expression for email attributes.',
+    'validationErrors.mobileRegexRequired': 'Enter a regular expression for mobile attributes.',
     regexPlaceholder: 'e.g., ^[a-zA-Z0-9]+$',
     enumValues: 'Allowed Values (Enum) - Optional',
     enumPlaceholder: 'Add value and press Enter',
     'tooltips.required': 'Users must provide a value for this field',
     'tooltips.unique': 'Each user must have a distinct value for this field',
     'tooltips.credential': 'Values will be hashed and not returned in API responses',
+    'tooltips.primary': 'Used as the primary contact for users',
+    'tooltips.primarySelected':
+      'Used as the primary contact for users. To change it, select Primary on another attribute of this type',
     credentialHint: 'This field will be treated as a secret. Values will be hashed and cannot be retrieved.',
     'types.string': 'String',
+    'types.email': 'Email',
+    'types.mobile': 'Mobile',
+    primary: 'Primary',
+    'validationErrors.primaryEmail': 'Select one email attribute as the primary email.',
+    'validationErrors.primaryMobile': 'Select one mobile attribute as the primary mobile.',
     'types.number': 'Number',
     'types.boolean': 'Boolean',
     'types.enum': 'Enum',
@@ -851,11 +888,14 @@ const translations = {
     'errors.USRS-1004': 'The user type request is missing required fields or contains invalid data.',
     'errors.USRS-1008': 'This user type is managed by the system and cannot be modified or deleted.',
     'errors.USRS-1011': 'Display attribute must reference an attribute defined in the schema.',
-    'errors.USRS-1012': 'Display attribute must reference a string or number type.',
+    'errors.USRS-1012': 'Display attribute must reference a string, email, mobile, or number type.',
     'errors.USRS-1013': 'Display attribute cannot reference a credential attribute.',
     'errors.USRS-1016':
       'The handle is invalid. It must start and end with a lowercase letter or number, and may contain only lowercase letters, numbers, hyphens, and underscores.',
     'errors.USRS-1017': 'The handle of a user type cannot be changed.',
+    'errors.USRS-1018': 'Primary email and mobile must reference a top-level attribute defined in the schema.',
+    'errors.USRS-1019':
+      'Primary email must reference an email attribute and primary mobile must reference a mobile attribute.',
 
     // Edit page
     'manageUserType.title': 'Manage User Type',
@@ -968,6 +1008,9 @@ const translations = {
     unique: 'Unique',
     removeProperty: 'Remove property',
     regexPattern: 'Regular Expression Pattern (Optional)',
+    contactRegexPattern: 'Regular Expression Pattern',
+    'validationErrors.emailRegexRequired': 'Enter a regular expression for email attributes.',
+    'validationErrors.mobileRegexRequired': 'Enter a regular expression for mobile attributes.',
     regexPlaceholder: 'e.g., ^[a-zA-Z0-9]+$',
     enumValues: 'Allowed Values (Enum) - Optional',
     enumPlaceholder: 'Add value and press Enter',
@@ -976,6 +1019,8 @@ const translations = {
     'tooltips.credential': 'Values will be hashed and not returned in API responses',
     credentialHint: 'This field will be treated as a secret. Values will be hashed and cannot be retrieved.',
     'types.string': 'String',
+    'types.email': 'Email',
+    'types.mobile': 'Mobile',
     'types.number': 'Number',
     'types.boolean': 'Boolean',
     'types.enum': 'Enum',
@@ -1057,7 +1102,7 @@ const translations = {
     'errors.USRS-1004': 'The agent type request is missing required fields or contains invalid data.',
     'errors.USRS-1008': 'This agent type is managed by the system and cannot be modified or deleted.',
     'errors.USRS-1011': 'Display attribute must reference an attribute defined in the schema.',
-    'errors.USRS-1012': 'Display attribute must reference a string or number type.',
+    'errors.USRS-1012': 'Display attribute must reference a string, email, mobile, or number type.',
     'errors.USRS-1013': 'Display attribute cannot reference a credential attribute.',
   },
 
@@ -1334,11 +1379,9 @@ const translations = {
     'errors.AGT-1004': 'The agent with the specified id does not exist.',
     'errors.AGT-1005': 'The specified organization unit does not exist.',
     'errors.AGT-1008': 'The agent ID is required.',
-    'errors.AGT-1009': 'The agent name must be provided and non-empty.',
     'errors.AGT-1010': 'The agent type must be provided.',
     'errors.AGT-1011': 'The limit parameter must be between 1 and 100.',
     'errors.AGT-1012': 'The offset parameter must be a non-negative integer.',
-    'errors.AGT-1013': 'An agent with the same name already exists.',
     'errors.AGT-1014': 'An agent with the same unique attribute value already exists.',
     'errors.AGT-1015': 'The provided attributes failed schema validation.',
     'errors.AGT-1016': 'The provided credential is invalid.',
@@ -1795,6 +1838,8 @@ const translations = {
     'errors.ROL-1012': 'One or more selected permissions are no longer valid. Refresh the page and try again.',
     'errors.ROL-1013': 'This role is managed declaratively and cannot be edited or deleted.',
     'errors.ROL-1015': 'New roles cannot be created while the server is running in declarative-only mode.',
+    'errors.ROL-1019': 'Select the assignee to remove from this role.',
+    'errors.ROL-1020': 'This assignee no longer holds the role. Refresh and try again.',
   },
 
   // ============================================================================
@@ -1842,6 +1887,7 @@ const translations = {
     'vendor.vonage.description': 'Deliver SMS and email passcodes through Vonage.',
     'vendor.sms-gateway.description': 'Route SMS through your own HTTP gateway.',
     'vendor.authzen-pdp.description': 'Delegate authorization decisions to an AuthZEN-compatible PDP.',
+    'vendor.smtp.description': 'Deliver email through your own SMTP server.',
     'vendor.trustedIdp.description': 'Trusted token issuer for token exchange and ID-JAG.',
 
     // Add custom connection wizard
@@ -1869,6 +1915,9 @@ const translations = {
     'wizard.protocol.subheading': 'Select the protocol supported by your policy decision point.',
     'wizard.protocol.authzen.label': 'AuthZEN',
     'wizard.protocol.authzen.description': 'Use the AuthZEN protocol to send authorization evaluation requests.',
+    'wizard.type.smtp.label': 'Email Provider (SMTP)',
+    'wizard.type.smtp.description': 'Deliver email through your own SMTP server.',
+    'wizard.type.smtp.tag': 'Message sender · Email',
     'wizard.type.trustedIdp.label': 'Trusted Token Issuer',
     'wizard.type.trustedIdp.description':
       "Trust an external IdP's identity assertions and exchange them for access tokens.",
@@ -1913,6 +1962,8 @@ const translations = {
       'Configure how ThunderID authenticates requests sent to this policy decision point.',
     'detail.authentication.method.label': 'Authentication method',
     'detail.authentication.method.none': 'None',
+    'detail.outboundAuthentication.description':
+      'Credentials ThunderID uses to sign in to this provider. Secrets are stored write-only.',
     'detail.dangerZone.title': 'Danger zone',
     'detail.dangerZone.description': 'Actions in this section are irreversible. Proceed with caution.',
     'detail.dangerZone.delete.title': 'Delete connection',
@@ -2046,12 +2097,28 @@ const translations = {
       'These mappings could not be matched to exactly one user or agent type. Remove them before saving this connection.',
     'subjectMapping.mappings.unresolved.entityType': 'Entity type: {{entityType}}',
     'subjectMapping.mappings.unresolved.attributes': 'Attributes: {{attributes}}',
+    'form.fields.smtpHost.label': 'Host',
+    'form.fields.smtpHost.hint': 'Hostname of the SMTP server email is sent through.',
+    'form.fields.smtpPort.label': 'Port',
+    'form.fields.smtpPort.hint': 'Port of the SMTP server. Typically 587 for STARTTLS or 465 for implicit TLS.',
+    'form.fields.smtpFromAddress.label': 'From address',
+    'form.fields.smtpFromAddress.hint': 'Address recipients see the email come from.',
+    'form.fields.smtpFromName.label': 'Sender name',
+    'form.fields.smtpFromName.hint':
+      'Optional name shown beside the address, for example Acme Support. Leave blank to show the address alone.',
+    'form.fields.smtpTls.label': 'Transport security',
+    'form.fields.smtpTls.hint':
+      'How the connection is secured. STARTTLS upgrades a plain connection, implicit TLS connects over TLS directly. None sends email unencrypted.',
+    'form.fields.authenticationType.label': 'Authentication method',
+    'form.fields.authenticationType.hint': 'How {{productName}} signs in to this server when sending.',
     'form.keyValue.name': 'Name',
     'form.keyValue.value': 'Value',
     'form.keyValue.showValue': 'Show value',
     'form.keyValue.hideValue': 'Hide value',
     'form.keyValue.add': 'Add',
     'form.keyValue.remove': 'Remove',
+    'form.sections.authentication': 'Authentication',
+    'form.authentication.loadError': 'Failed to load authentication methods',
     'form.sections.federation': 'Federation',
     'form.secret.update': 'Update',
     'form.secret.keepHelp': 'Leave unchanged to keep the stored secret.',
@@ -2099,7 +2166,8 @@ const translations = {
     'attributeMapping.mappings.remove': 'Remove',
     // Section 3 — account linking
     'attributeMapping.linking.title': 'Account Linking',
-    'attributeMapping.linking.description': 'The attributes used to find the associated local user.',
+    'attributeMapping.linking.description':
+      'The attributes used to find the associated local user. Each one matches on every local attribute it is mapped to, and on a local attribute of the same name.',
     'attributeMapping.linking.label': 'External Attribute',
     'attributeMapping.linking.labelCombo': 'External Attributes',
     'attributeMapping.linking.placeholder': 'e.g. email',
@@ -2187,11 +2255,15 @@ const translations = {
     'validation.positiveInteger': 'Enter a positive integer.',
     'validation.nonNegativeInteger': 'Enter zero or a positive integer.',
     'validation.accountSid': 'Enter a valid Account SID: “AC” followed by 32 hexadecimal characters.',
+    'validation.emailAddress': 'Enter a valid email address.',
+    'validation.tlsRequiredForAuthentication':
+      'Credentials cannot be sent over an unencrypted connection. Choose STARTTLS or implicit TLS, or set the authentication method to None.',
 
     // Error codes (backend)
     'errors.CON-1001': 'The requested connection category is not supported.',
     'errors.CON-1002': 'The limit parameter must be a positive integer.',
     'errors.CON-1003': 'The offset parameter must be a non-negative integer.',
+    'errors.CON-1005': 'The selected authentication method is not supported by this deployment.',
     'errors.IDP-1001': 'This identity provider no longer exists. It may have already been deleted.',
     'errors.IDP-1002': 'The identity provider ID is invalid or missing.',
     'errors.IDP-1003': 'The identity provider name is invalid or missing.',
@@ -2607,6 +2679,9 @@ const translations = {
     'onboarding.configure.stack.platform.backend.description': 'Server-to-server APIs and services',
     'onboarding.configure.stack.platform.wallet.title': 'Digital Wallet',
     'onboarding.configure.stack.platform.wallet.description': 'OpenID4VCI wallet that requests verifiable credentials',
+    'onboarding.configure.stack.platform.cimd.title': 'CIMD',
+    'onboarding.configure.stack.platform.cimd.description':
+      'Register a client from the metadata document its vendor publishes.',
     'onboarding.configure.stack.platform.custom.title': 'Custom',
     'onboarding.configure.stack.platform.custom.description':
       'Fully customizable application with all configuration options available',
@@ -3152,6 +3227,7 @@ const translations = {
     'edit.token.click_to_remove': 'Click to remove',
     'edit.token.configure_attributes': 'Add or Remove Attributes',
     'edit.token.configure_attributes.hint': 'Click on user attributes to add them to the token.',
+    'edit.token.legacy_user_type_warning': 'userType is a legacy claim. Use userTypeHandle and userTypeName instead',
     'edit.token.token_preview.title': 'Decoded Payload',
     'edit.token.validity.hint': 'Token validity period in seconds (e.g., 3600 for 1 hour)',
     'edit.token.validity.error': 'Validity period must be at least 1 second',
@@ -3317,6 +3393,64 @@ const translations = {
       'This application cannot be deleted because {{dependencies}} depend on it. Remove or reassign them first.',
     'errors.APP-1039':
       "The {{sourceFlowType}} references a different {{flowType}} than the one configured for this application. Update the {{sourceFlowType}} so it calls the same {{flowType}}, or change the application's {{flowType}} configuration.",
+    'errors.APP-1050':
+      "This client doesn't meet the metadata document rules. Check its redirect URIs, grant types, and authentication settings.",
+    'cimd.document.quickPicks': 'Known clients:',
+    'cimd.document.subtitle':
+      "The client's URL is its client ID. Its name and sign-in details come from its vendor, with no setup in the client itself.",
+    'cimd.document.title': "Enter the client's metadata document",
+    'cimd.document.url.fetch': 'Fetch document',
+    'cimd.document.url.label': 'Metadata document URL',
+    'cimd.edit.badge': 'CIMD',
+    'cimd.edit.description':
+      "These values come from the client's metadata document. Re-fetch it to apply the vendor's changes.",
+    'cimd.edit.device': 'Device',
+    'cimd.edit.documentUrl': 'Document URL',
+    'cimd.edit.refetch': 'Re-fetch document',
+    'cimd.edit.title': 'CIMD',
+    'cimd.errors.generic': "This metadata document can't be used.",
+    'cimd.identity.document.description':
+      "Enter the client's metadata document URL. Its identity and sign-in details come from its vendor.",
+    'cimd.identity.document.title': 'Another client with a CIMD',
+    'cimd.identity.knownClients': 'Known clients',
+    'cimd.identity.manual.description': 'For your own MCP clients. You set the redirect URIs and credentials.',
+    'cimd.identity.manual.title': "I'll configure it myself",
+    'cimd.identity.otherClients': 'Other clients',
+    'cimd.identity.subtitle': 'Known clients register in one step from the metadata document their vendor publishes.',
+    'cimd.identity.title': 'Which MCP client are you connecting?',
+    'cimd.preview.confidential': 'Private key JWT, signed by the vendor',
+    'cimd.preview.grants': 'Grants',
+    'cimd.preview.inlineKeys': 'Included in the document',
+    'cimd.preview.keys': 'Keys',
+    'cimd.preview.loopbackWarning':
+      "This client only returns to the user's device. Any program on the device can present this identity.",
+    'cimd.preview.public': 'Public client, no secret',
+    'cimd.preview.publishedBy': 'Published by {{host}}',
+    'cimd.preview.redirectUris': 'Redirect URIs',
+    'cimd.preview.signInType': 'Sign-in type',
+    'cimd.refetch.apply': 'Apply',
+    'cimd.refetch.authChanged': 'The sign-in type changes from {{from}} to {{to}}.',
+    'cimd.refetch.changed': 'The document has changed. Review the differences before applying them.',
+    'cimd.refetch.noChanges': 'The document matches what this application uses.',
+    'cimd.refetch.title': 'Re-fetch metadata document',
+    'cimd.refetch.unchanged': 'The application is unchanged.',
+    'cimd.refetch.updateDetails': 'Also update the name and links from the document',
+    'edit.page.tabs.metadataDocument': 'Metadata document',
+    'onboarding.steps.clientIdentity': 'Client identity',
+    'onboarding.steps.metadataDocument': 'Metadata document',
+    'errors.CIMD-1002': 'Enter an HTTPS URL with a host name and a path, for example https://example.com/client.json.',
+    'errors.CIMD-1003': "Couldn't retrieve a metadata document from this URL. Check the address and try again.",
+    'errors.CIMD-1004':
+      'This document describes a different client. Its client_id must equal the URL it is served from.',
+    'errors.CIMD-1005':
+      "Each redirect URI must be on the client's own domain or the user's device, and at least one is required.",
+    'errors.CIMD-1006':
+      'Only public clients, and private key JWT clients with exactly one key source, can register from a metadata document.',
+    'errors.CIMD-1007': "This document contains a client secret, which a metadata document can't carry safely.",
+    'errors.CIMD-1008': 'This client must use the authorization code grant, and can add only refresh tokens.',
+    'errors.CIMD-1010': "The request couldn't be read. Please try again.",
+    'errors.CIMD-1011': "The document's jwks_uri must be an HTTPS URL on a public address.",
+    'errors.CIMD-1013': "The document's inline key set is too large. Publish it at a jwks_uri instead.",
   },
 
   // ============================================================================
@@ -3801,6 +3935,46 @@ const translations = {
     'core.executions.preDelete.description':
       'Validate the target of an administrative operation and plan the revocation carried out by the executors that follow.',
 
+    // Criteria revocation executor modes
+    'core.executions.criteriaRevocation.mode.revoke': 'Revoke Tokens',
+    'core.executions.criteriaRevocation.mode.advanceCutoff': 'Advance Revocation Cutoff',
+    'core.executions.criteriaRevocation.mode.label': 'Mode',
+    'core.executions.criteriaRevocation.mode.placeholder': 'Select a mode',
+    'core.executions.criteriaRevocation.mode.hint':
+      'Revoke runs before the change. Advance Revocation Cutoff runs after the change commits, closing the window a token could be minted in. A node without a mode revokes.',
+    'core.executions.criteriaRevocation.description': 'Persist every token criterion from the trusted revocation plan.',
+
+    // Access change validator executor modes
+    'core.executions.accessChangeValidator.mode.roleAssignmentRemoval': 'Validate and Plan Assignment Removal',
+    'core.executions.accessChangeValidator.mode.roleDeletion': 'Validate and Plan Role Deletion',
+    'core.executions.accessChangeValidator.mode.rolePermissionRemoval': 'Validate and Plan Permission Change',
+    'core.executions.accessChangeValidator.mode.groupDeletion': 'Validate and Plan Group Deletion',
+    'core.executions.accessChangeValidator.mode.groupMembershipRemoval': 'Validate and Plan Membership Removal',
+    'core.executions.accessChangeValidator.mode.actionDeletion': 'Validate and Plan Action Deletion',
+    'core.executions.accessChangeValidator.mode.label': 'Mode',
+    'core.executions.accessChangeValidator.mode.placeholder': 'Select a mode',
+    'core.executions.accessChangeValidator.description':
+      'Validate an access change and plan the revocation of the scopes it takes away, carried out by the executors that follow.',
+
+    // Role executor modes
+    'core.executions.roleExecutor.mode.roleAssignmentRemoval': 'Remove Role Assignment',
+    'core.executions.roleExecutor.mode.roleDeletion': 'Delete Role',
+    'core.executions.roleExecutor.mode.rolePermissionRemoval': 'Change Role Permissions',
+    'core.executions.roleExecutor.mode.label': 'Mode',
+    'core.executions.roleExecutor.mode.placeholder': 'Select a mode',
+    'core.executions.roleExecutor.mode.hint':
+      'Must match the mode of the access change validator earlier in the flow. A mismatched pair is refused at runtime.',
+    'core.executions.roleExecutor.description': 'Apply the role change named by the trusted revocation plan.',
+
+    // Group executor modes
+    'core.executions.groupExecutor.mode.groupDeletion': 'Delete Group',
+    'core.executions.groupExecutor.mode.groupMembershipRemoval': 'Remove Group Member',
+    'core.executions.groupExecutor.mode.label': 'Mode',
+    'core.executions.groupExecutor.mode.placeholder': 'Select a mode',
+    'core.executions.groupExecutor.mode.hint':
+      'Must match the mode of the access change validator earlier in the flow. A mismatched pair is refused at runtime.',
+    'core.executions.groupExecutor.description': 'Apply the group change named by the trusted revocation plan.',
+
     // Passkey executor modes
     'core.executions.passkey.mode.challenge': 'Challenge',
     'core.executions.passkey.mode.verify': 'Verify',
@@ -3842,6 +4016,11 @@ const translations = {
     'core.executions.email.emailTemplate.noTemplates':
       'No email templates available. Please create an email template first.',
     'core.executions.email.emailTemplate.loadError': 'Failed to load email templates. Please try again.',
+    'core.executions.email.sender.label': 'Email Provider',
+    'core.executions.email.sender.placeholder': 'Select an email provider',
+    'core.executions.email.sender.hint': 'The email provider used to deliver this email.',
+    'core.executions.email.sender.noSenders': 'No email providers available. Please create an email provider first.',
+    'core.executions.email.sender.loadError': 'Failed to load email providers',
 
     // SMS executor
     'core.executions.sms.description': 'Configure the SMS executor settings.',
@@ -3954,16 +4133,22 @@ const translations = {
     'core.executions.httpRequest.method.label': 'Method',
     'core.executions.httpRequest.method.placeholder': 'Select HTTP method',
     'core.executions.httpRequest.headers.label': 'Headers',
+    'core.executions.httpRequest.headers.keyLabel': 'Name',
+    'core.executions.httpRequest.headers.valueLabel': 'Value',
     'core.executions.httpRequest.headers.keyPlaceholder': 'Header name',
     'core.executions.httpRequest.headers.valuePlaceholder': 'Header value',
+    'core.executions.httpRequest.headers.addLabel': 'Add Header',
     'core.executions.httpRequest.body.label': 'Request Body',
     'core.executions.httpRequest.body.placeholder': 'Enter JSON request body',
     'core.executions.httpRequest.timeout.label': 'Timeout (seconds)',
     'core.executions.httpRequest.timeout.placeholder': '10',
     'core.executions.httpRequest.timeout.hint': 'Request timeout in seconds (max 20).',
     'core.executions.httpRequest.responseMapping.label': 'Response Mapping',
+    'core.executions.httpRequest.responseMapping.keyLabel': 'Runtime data key',
+    'core.executions.httpRequest.responseMapping.valueLabel': 'Response path',
     'core.executions.httpRequest.responseMapping.keyPlaceholder': 'Runtime data key',
     'core.executions.httpRequest.responseMapping.valuePlaceholder': 'Response path (e.g., data.userId)',
+    'core.executions.httpRequest.responseMapping.addLabel': 'Add Mapping',
     'core.executions.httpRequest.errorHandling.label': 'Error Handling',
     'core.executions.httpRequest.errorHandling.failOnError.label': 'Fail on Error',
     'core.executions.httpRequest.errorHandling.retryCount.label': 'Retry Count',
@@ -4080,6 +4265,10 @@ const translations = {
     'core.validation.fields.phoneNumberInput.label': 'Phone number label is required',
     'core.validation.fields.phoneNumberInput.ref': 'Phone number attribute is required',
 
+    // Validation messages - email
+    'core.validation.fields.email.noSender':
+      'Email executor <code>{{id}}</code> has no email provider selected. Select an email provider so the step can send.',
+
     // Validation messages - form
     'core.validation.fields.form.noSubmitButton':
       'Form <code>{{id}}</code> has input fields but no submit button. Add a button with type "Submit" so that users can submit the form.',
@@ -4098,9 +4287,22 @@ const translations = {
     'core.validation.signOut.confirmInvalidTarget':
       'Sign-out button <code>{{id}}</code> does not lead to a session sign-out step, so it will not sign the user out. Connect it to one, or change its action.',
 
+    // Validation messages - account linking
+    'core.validation.linking.rejectNotConnected':
+      'Reject button <code>{{id}}</code> is not connected, so the account linking step will never see the refusal. Connect it to that step, or change its action.',
+    'core.validation.linking.rejectInvalidTarget':
+      'Reject button <code>{{id}}</code> does not lead back to the account linking step, so that step will never see the refusal. Connect it to the linking step, or change its action.',
+    'core.validation.linking.incompleteNotConnected':
+      'Account linking step <code>{{id}}</code> has no incomplete path, so it cannot show the linking prompt. Connect its incomplete handle to the prompt view.',
+    'core.validation.linking.failureLoop':
+      'The failure path of account linking step <code>{{id}}</code> leads back to it without a federated sign-in, so the flow will be rejected on save. Route the failure path through a federated sign-in first.',
+
     // Validation messages - rich text links
     'core.validation.richText.actionNotConnected':
       'Link <code>{{id}}</code> is not connected to a step, so clicking it will fail at runtime. Connect it to the step it should open, or turn off "Use as an interactive link".',
+
+    // Elements - runtime data bound
+    'core.elements.dataSource.noSourceBound': 'No source bound',
 
     // Elements - rich text
     'core.elements.richText.placeholder': 'Enter text here...',
@@ -4351,6 +4553,7 @@ const translations = {
     'core.buttonExtendedProperties.action.submit': 'Submit Form',
     'core.buttonExtendedProperties.action.trigger': 'Trigger Action',
     'core.buttonExtendedProperties.action.confirm': 'Confirm Action',
+    'core.buttonExtendedProperties.action.reject': 'Reject Action',
     'core.buttonExtendedProperties.action.hint': 'What happens when the button is activated',
     'core.buttonExtendedProperties.startIcon.label': 'Start Icon',
     'core.buttonExtendedProperties.startIcon.placeholder': 'Enter icon path (e.g., assets/images/icons/icon.svg)',
@@ -4527,6 +4730,18 @@ const translations = {
   design: {
     'page.title': 'Design',
     'page.subtitle': 'Create, customize, and manage visual themes & layouts for your applications.',
+    'notificationTemplatePreview.subjectLabel': 'Subject',
+    'notificationTemplatePreview.frameTitle': 'Email preview',
+    'notificationTemplatePreview.warnings.unsupported':
+      '"{{token}}" is not a supported token and will cause the template to fail to send.',
+    'notificationTemplatePreview.warnings.designNotAllowed':
+      'Design token "{{token}}" is only allowed in the email body, not here.',
+    'notificationTemplatePreview.warnings.designUnresolved':
+      'Design token "{{token}}" does not match any value in the selected theme; it is shown as-is and may not render.',
+    'notificationTemplatePreview.warnings.missingTranslation':
+      'No translation for "{{token}}" in any language; the template will fail to send until it is added.',
+    'notificationTemplatePreview.warnings.unknownContext':
+      '"{{token}}" is not a recognized context value and will not be substituted when the template is sent.',
     'themes.section.title': 'Themes',
     'themes.actions.add.label': 'Add Theme',
     'themes.empty_state.message': 'No themes yet',
@@ -4920,6 +5135,108 @@ const translations = {
     commandStart: './start.sh',
     adminApp: 'Admin App',
     loginApp: 'Login App',
+  },
+  notificationTemplates: {
+    'listing.title.email': 'Email Templates',
+    'listing.title.sms': 'SMS Templates',
+    'listing.subtitle.email': 'Create, customize, and localize the email notifications your applications send.',
+    'listing.subtitle.sms': 'Create, customize, and localize the SMS notifications your applications send.',
+    'listing.addTemplate': 'New template',
+    'listing.error': 'Failed to load templates',
+    'listing.columns.name': 'Name',
+    'listing.columns.actions': 'Actions',
+    'editor.back': 'Notification Templates',
+    'editor.save': 'Save changes',
+    'editor.reset': 'Reset',
+    'editor.unsavedChanges': 'You have unsaved changes',
+    'editor.loadError': 'Failed to load template',
+    'editor.description.placeholder': 'Add a description',
+    'editor.description.empty': 'No description',
+    'editor.subject': 'Subject',
+    'editor.body': 'Body',
+    'editor.design.title': 'Design',
+    'editor.design.help': 'Choose the color theme for this email. The preview uses the selected design theme.',
+    'editor.design.colorScheme': 'Color scheme',
+    'editor.design.light': 'Light',
+    'editor.design.dark': 'Dark',
+    'editor.tokens.hint': 'Select a token to insert it into the template',
+    'editor.tokens.collapse': 'Hide available tokens',
+    'editor.tokens.expand': 'Show available tokens',
+    'editor.tokens.searchPlaceholder': 'Search available tokens...',
+    'editor.tokens.design': 'Design tokens',
+    'editor.tokens.context': 'Context tokens',
+    'editor.tokens.translation': 'Translation tokens',
+    'editor.tokens.noTranslation': 'No translation keys match your search.',
+    'editor.tokens.add.title': 'Add translation key',
+    'editor.tokens.add.keyPlaceholder': 'Key (e.g. otp.subject)',
+    'editor.tokens.add.valuePlaceholder': 'Translation value',
+    'editor.tokens.add.submit': 'Add',
+    'editor.tokens.add.error': 'Failed to add translation key.',
+    'editor.tokens.add.invalidKey': 'Use only letters, numbers, dots, hyphens and underscores.',
+    'editor.tokens.add.duplicateKey': 'This key already exists; select it from the list instead.',
+    'editor.tokens.add.keysNotLoaded': 'Translation keys are still loading. Try again in a moment.',
+    'editor.tokens.labels.design.primary': 'Primary color',
+    'editor.tokens.labels.design.primaryContrast': 'Primary contrast text',
+    'editor.tokens.labels.design.secondary': 'Secondary color',
+    'editor.tokens.labels.design.textPrimary': 'Text primary',
+    'editor.tokens.labels.design.backgroundDefault': 'Background default',
+    'editor.tokens.labels.design.backgroundPaper': 'Background paper',
+    'editor.tokens.labels.context.appName': 'App name',
+    'editor.tokens.labels.context.otpCode': 'OTP code',
+    'editor.tokens.labels.context.expiryTime': 'Expiry time',
+    'editor.tokens.labels.context.magicLink': 'Magic link',
+    'editor.tokens.labels.context.inviteLink': 'Invite link',
+    'editor.validation.emailRequired': 'A subject and body are required.',
+    'editor.validation.bodyRequired': 'A body is required.',
+    'editor.tokens.noDesign': 'No design tokens match your search.',
+    'editor.tokens.noContext': 'No context placeholders match your search.',
+    'editor.preview.title': 'Preview',
+    'editor.preview.language': 'Language',
+    'editor.preview.languageDefault': 'English (US)',
+    'editor.preview.designTheme': 'Design theme',
+    'editor.preview.designThemeDefault': 'Default design theme',
+    'update.success': 'Template updated successfully.',
+    'update.error': 'Failed to save template. Please try again.',
+    'delete.title': 'Delete Template',
+    'delete.message': 'Are you sure you want to delete this template? This action cannot be undone.',
+    'delete.messageNamed': 'Are you sure you want to delete "{{name}}"? This action cannot be undone.',
+    'delete.success': 'Template deleted successfully.',
+    'delete.error': 'Failed to delete template. Please try again.',
+    'create.steps.organizationUnit': 'Organization Unit',
+    'create.steps.template': 'Template',
+    'create.steps.identity': 'Details',
+    'create.steps.content': 'Content',
+    'create.organizationUnit.fieldLabel': 'Organization Unit',
+    'create.organizationUnit.title': 'Where should this template belong?',
+    'create.organizationUnit.subtitle':
+      "Choose the organization unit that will own this template. You can't change this once created.",
+    'create.template.title': 'Choose a starting template',
+    'create.template.blank.title': 'Start from scratch',
+    'create.template.blank.description': 'Build the template from an empty subject and body.',
+    'create.template.search': 'Search templates...',
+    'create.template.noResults': 'No templates match your search.',
+    'create.submit': 'Create',
+    'create.error': 'Failed to create template. Please try again.',
+    'create.details.titleEmail': "Let's collect some details about your email template",
+    'create.details.titleSms': "Let's collect some details about your SMS template",
+    'create.displayName.label': 'Display name',
+    'create.displayName.placeholder': 'e.g. OTP Verification',
+    'create.handle.label': 'Handle',
+    'create.handle.placeholder': 'e.g. otp-verification',
+    'create.handle.helperText': 'A unique, URL-friendly identifier. Cannot be changed later.',
+    'create.handle.duplicate': 'A template with this handle already exists.',
+    'create.handle.invalid': 'Use lowercase letters, numbers, hyphens and underscores.',
+    'errors.NTM-1009': 'A template with this handle already exists in this channel.',
+    'errors.NTM-1010': 'This template is used by a flow and cannot be deleted.',
+    'errors.NTM-1011': 'The handle must be a lowercase kebab-case identifier.',
+    'errors.NTM-1012': 'A subject cannot be set for this channel.',
+    'errors.NTM-1013': 'A design cannot be set for this channel.',
+    'errors.NTM-1014': 'The display name is too long.',
+    'errors.NTM-1015': 'The description is too long.',
+    'errors.NTM-1016': 'The handle is too long.',
+    'errors.NTM-1017': 'The color scheme must be light or dark.',
+    'errors.NTM-1020': 'The content contains an unsupported placeholder. Use the ctx, t, or design token syntax.',
+    'errors.NTM-1022': 'Select a valid organization unit.',
   },
   resourceServers: {
     'listing.title': 'Resource Servers',

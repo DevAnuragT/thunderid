@@ -6,6 +6,8 @@ package declarativeresource
 import (
 	"context"
 
+	"gopkg.in/yaml.v3"
+
 	tidcommon "github.com/thunder-id/thunderid/pkg/thunderidengine/common"
 
 	"github.com/thunder-id/thunderid/internal/system/log"
@@ -67,6 +69,46 @@ type PerResourceRuler interface {
 // "{{.NAME}}" where it writes templates.
 type ReferenceWriter interface {
 	WriteValueReferences(references bool)
+}
+
+// ValueCapturer keeps the values a resource's export refers to by name, so that whatever later
+// resolves those names finds them.
+//
+// A service that writes a resource hands it here once the write has succeeded, while it still holds
+// what a read would not return, such as a client secret it has just generated. The resource type is
+// the one its exporter is registered under.
+//
+// It is optional and best-effort: a service with none behaves exactly as before, and a capture that
+// fails is logged by the capturer and never fails the write that triggered it.
+type ValueCapturer interface {
+	CaptureValues(ctx context.Context, resourceType string, resource interface{})
+}
+
+// ResourceViewer is implemented by an exporter that can show a document it exported the way the
+// resource's own read returns it, so a resource kept in a configuration version can be shown as that
+// read would show it. A value reference such as "var:NAME" is shown as it is, not resolved. An error
+// means the document does not read as this resource.
+type ResourceViewer interface {
+	ViewResource(ctx context.Context, document *yaml.Node) (interface{}, error)
+}
+
+// ResourcePartViewer is implemented by a ResourceViewer whose resource has parts: collections the
+// resource's own API serves apart from it, such as a group's members. ViewResourceParts shows every
+// part a document has, keyed by the path below the resource it is served at, each as the read of
+// that path returns it.
+type ResourcePartViewer interface {
+	ViewResourceParts(ctx context.Context, document *yaml.Node) (map[string]interface{}, error)
+}
+
+// DecodeView decodes a document into T and shows it with view, so a viewer reads its document the
+// way every other viewer does. A document that does not decode as T is refused with the decode error.
+func DecodeView[T, V any](document *yaml.Node, view func(*T) (V, error)) (V, error) {
+	var decoded T
+	if err := document.Decode(&decoded); err != nil {
+		var none V
+		return none, err
+	}
+	return view(&decoded)
 }
 
 // ExportError represents errors that occurred during export.

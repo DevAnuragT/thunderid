@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/thunder-id/thunderid/internal/system/export"
+	declarativeresource "github.com/thunder-id/thunderid/internal/system/declarative_resource"
 )
 
 // Version is a captured state of this deployment's configuration.
@@ -29,13 +29,39 @@ type Version struct {
 	Resources string `json:"resources,omitempty"`
 	// Skipped names the resources the export could not write, each with why, as an export reports
 	// them. Only the capture's own answer carries it; it is not kept with the version.
-	Skipped []export.ExportError `json:"skipped,omitempty"`
+	Skipped []declarativeresource.ExportError `json:"skipped,omitempty"`
 	// Unchanged is set on a capture's answer when the configuration matched a version already captured,
 	// which is answered instead of capturing the same configuration again.
 	Unchanged bool `json:"unchanged,omitempty"`
+	// References lists each place the version refers to a variable or a secret. Only a read of one
+	// version carries it.
+	References []ValueReference `json:"references,omitempty"`
 	// variables are the values the export carried beside the documents, sealed as one secret. A
 	// reference-style export carries none. They are never returned by a read.
 	variables string
+}
+
+// Kinds of value a reference names.
+const (
+	ReferenceVariable = "variable"
+	ReferenceSecret   = "secret"
+)
+
+// ValueReference is one place a version refers to a variable or a secret by name: the resource that
+// holds the reference and the field it stands in, so the value can be told apart by what it is for
+// rather than by its name alone.
+type ValueReference struct {
+	Name         string `json:"name"`
+	Kind         string `json:"kind"`
+	ResourceType string `json:"resourceType"`
+	ResourceID   string `json:"resourceId,omitempty"`
+	// ResourceName is how the resource is known: its name, or a user's username.
+	ResourceName string `json:"resourceName,omitempty"`
+	// Field is the key the reference is the value of, or the list's key for a list item.
+	Field string `json:"field,omitempty"`
+	// List is set when the reference is a list's item: the value it names holds the list's items, as a
+	// JSON list of strings or a single string.
+	List bool `json:"list,omitempty"`
 }
 
 // CaptureRequest is the body of a capture.
@@ -59,9 +85,14 @@ type AppliedVersion struct {
 
 // ApplyRequest is the body of an apply. Version is a version's hash, a prefix of at least seven of its
 // characters, or "latest", and defaults to "latest".
+//
+// Selection names, by key, the changes to apply. Every other change the diff reports is left alone,
+// and the gateway goes on leaving it alone in later applies until one selects it again. Without a
+// selection, the gateway's standing choices apply; an empty one leaves every change alone.
 type ApplyRequest struct {
-	Version string `json:"version,omitempty"`
-	DryRun  bool   `json:"dryRun,omitempty"`
+	Version   string    `json:"version,omitempty"`
+	DryRun    bool      `json:"dryRun,omitempty"`
+	Selection *[]string `json:"selection,omitempty"`
 }
 
 // RevertRequest is the body of a revert.
@@ -83,12 +114,15 @@ const (
 	ChangeUnchanged ChangeKind = "unchanged"
 )
 
-// Change is one resource's difference.
+// Change is one resource's difference. Key names the resource for a selection. Excluded marks a
+// change the gateway is set to leave alone, which an apply neither writes nor removes.
 type Change struct {
+	Key          string     `json:"key"`
 	ResourceType string     `json:"resourceType"`
 	ID           string     `json:"id,omitempty"`
 	Name         string     `json:"name,omitempty"`
 	Change       ChangeKind `json:"change"`
+	Excluded     bool       `json:"excluded,omitempty"`
 	// Lines is the resource's document diffed line by line, from what the gateway holds to what is
 	// applied. An unchanged resource has none.
 	Lines []LineOp `json:"lines,omitempty"`
@@ -101,7 +135,7 @@ type LineOp struct {
 	Text string `json:"text"`
 }
 
-// DiffSummary counts the changes by kind.
+// DiffSummary counts the changes by kind, leaving out those the gateway is set to leave alone.
 type DiffSummary struct {
 	Added     int `json:"added"`
 	Updated   int `json:"updated"`
@@ -137,6 +171,8 @@ type ApplyResult struct {
 type MissingValues struct {
 	Variables []string `json:"variables,omitempty"`
 	Secrets   []string `json:"secrets,omitempty"`
+	// References says where the version refers to each missing value.
+	References []ValueReference `json:"references,omitempty"`
 }
 
 // empty reports whether nothing is missing.

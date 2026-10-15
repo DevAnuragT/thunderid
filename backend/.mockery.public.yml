@@ -412,7 +412,7 @@ packages:
     interfaces:
       Service:
       Resolver:
-      HandleTransport:
+      HandleTransportInterface:
 
   github.com/thunder-id/thunderid/internal/flow/mgt:
     config:
@@ -715,14 +715,6 @@ packages:
       dir: tests/mocks/attributecachemock
       structname: '{{.InterfaceName}}Mock'
       pkgname: attributecachemock
-      filename: "{{.InterfaceName}}_mock.go"
-
-  github.com/thunder-id/thunderid/internal/system/template:
-    config:
-      all: true
-      dir: tests/mocks/templatemock
-      structname: '{{.InterfaceName}}Mock'
-      pkgname: templatemock
       filename: "{{.InterfaceName}}_mock.go"
 
   github.com/thunder-id/thunderid/internal/system/resourcedependency:

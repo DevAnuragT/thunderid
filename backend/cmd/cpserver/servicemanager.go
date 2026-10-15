@@ -130,6 +130,11 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 	// List to collect exporters from each package
 	var exporters []declarativeresource.ResourceExporter
 
+	// The services that write a resource whose export refers to a value hand it here, so the value
+	// reaches the default gateway's store under the name the export refers to it by. It is bound to the
+	// export and the gateways once both exist below, since the export is built from these services.
+	valueCapture := gateway.NewValueCapture()
+
 	// Initialize i18n service for internationalization support.
 	i18nService, i18nExporter, err := i18nmgt.Initialize(mux, config.GetServerRuntime().Config.Translation)
 	fatalOnError(ctx, logger, err, "Failed to initialize i18n service")
@@ -164,7 +169,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 	entityProvider := entityprovider.InitializeEntityProvider(entityService)
 
 	userService, ouUserResolver, userExporter, err := user.Initialize(
-		mux, entityService, ouService, entityTypeService, ouAuthzService,
+		mux, entityService, ouService, entityTypeService, ouAuthzService, valueCapture,
 	)
 	fatalOnError(ctx, logger, err, "Failed to initialize UserService")
 	exporters = append(exporters, userExporter)
@@ -178,7 +183,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 	authZENPDPService, err := authzenpdp.Initialize(runtime.Config.AuthZENPDP, entityTypeService)
 	fatalOnError(ctx, logger, err, "Failed to initialize AuthZENPDPService")
 
-	resourceService, resourceExporter, err := resource.Initialize(mux, ouService, authZENPDPService)
+	resourceService, resourceExporter, err := resource.Initialize(mux, ouService, authZENPDPService, valueCapture)
 	fatalOnError(ctx, logger, err, "Failed to initialize Resource Service")
 	exporters = append(exporters, resourceExporter)
 
@@ -208,13 +213,15 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 	notifSenderMgtSvc, _, _, err := notification.Initialize(jwtService)
 	fatalOnError(ctx, logger, err, "Failed to initialize NotificationService")
 
-	notifTemplateSvc, _, err := notificationtemplate.Initialize(mux, cacheManager, i18nService)
+	notifTemplateSvc, _, notifTemplateExporter, err := notificationtemplate.Initialize(
+		mux, cacheManager, ouService, i18nService)
 	fatalOnError(ctx, logger, err, "Failed to initialize NotificationTemplateService")
+	exporters = append(exporters, notifTemplateExporter)
 
 	// Register the /connections API as a thin layer over the identity-provider and
 	// notification-sender management services.
 	connectionExporter, err := connection.Initialize(
-		mux, idpService, notifSenderMgtSvc, resourceService, authZENPDPService)
+		mux, idpService, notifSenderMgtSvc, resourceService, authZENPDPService, valueCapture)
 	fatalOnError(ctx, logger, err, "Failed to initialize connection declarative resources")
 	exporters = append(exporters, connectionExporter)
 
@@ -288,7 +295,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 	inboundClientService, err := inboundclient.Initialize(
 		cacheManager, certservice, entityProvider,
 		themeMgtService, layoutMgtService, flowMgtService, entityTypeService, runtimeCryptoSvc, jweService,
-		cimdService, nil, nil)
+		cimdService, nil, nil, inboundclient.KeepingValueReferences())
 	fatalOnError(ctx, logger, err, "Failed to initialize InboundClientService")
 
 	// TODO: Remove entityService dependency after finalizing declarative resource loading pattern
@@ -296,12 +303,12 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 	// deny list, and this plane issues and revokes no tokens. application treats nil as "no opinion".
 	applicationService, applicationExporter, err := application.Initialize(
 		mux, mcpServer, entityService, inboundClientService, ouService, i18nService,
-		runtimeCryptoSvc, serverConfigService, nil, sharingService)
+		runtimeCryptoSvc, serverConfigService, nil, sharingService, valueCapture)
 	fatalOnError(ctx, logger, err, "Failed to initialize ApplicationService")
 	exporters = append(exporters, applicationExporter)
 
 	agentService, agentExporter, err := agent.Initialize(mux, entityService, inboundClientService, ouService,
-		roleService, ouAuthzService)
+		roleService, ouAuthzService, valueCapture, entityTypeService)
 	fatalOnError(ctx, logger, err, "Failed to initialize AgentService")
 	exporters = append(exporters, agentExporter)
 
@@ -323,7 +330,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 		resource:      resourceService,
 		notifTemplate: notifTemplateSvc,
 	}, applicationService, agentService, flowMgtService, roleAssignmentService, roleService,
-		groupService, ouService, ouUserResolver, ouGroupResolver, resourceService)
+		groupService, ouService, ouUserResolver, ouGroupResolver, resourceService, sharingService)
 
 	// Initialize export service with collected exporters
 	// This plane authors configuration and does not hold the values it refers to, so an export
@@ -332,7 +339,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 
 	// The gateways this control plane administers. Registration is bounded by gateway.max_gateways,
 	// which is one unless a deployment raises it.
-	gatewayService, err := gateway.Initialize(mux, exportService)
+	gatewayService, err := gateway.Initialize(mux, exportService, valueCapture, exporters)
 	fatalOnError(ctx, logger, err, "Failed to initialize gateway service")
 
 	// Initialize import service
@@ -359,6 +366,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 		gatewayService,
 		notifTemplateSvc,
 		authZENPDPService,
+		sharingService,
 		// A control plane keeps configuration as references and holds no values, so none are resolved.
 		nil,
 	)

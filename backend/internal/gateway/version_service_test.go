@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/thunder-id/thunderid/internal/system/cmodels"
+	declarativeresource "github.com/thunder-id/thunderid/internal/system/declarative_resource"
 	"github.com/thunder-id/thunderid/internal/system/export"
 	tidcommon "github.com/thunder-id/thunderid/pkg/thunderidengine/common"
 )
@@ -28,6 +30,9 @@ type fakeVersionStore struct {
 	err      error
 	// setErr fails recording what a gateway holds.
 	setErr error
+	// excluded is what each gateway is set to leave alone; excludeErr fails keeping it.
+	excluded   map[string]map[string]excludedResource
+	excludeErr error
 }
 
 func (f *fakeVersionStore) Add(_ context.Context, version Version) (*Version, error) {
@@ -137,17 +142,71 @@ func (f *fakeVersionStore) DeleteApplied(_ context.Context, gatewayID string) er
 	return nil
 }
 
-// fakeExporter answers a capture with canned files.
+func (f *fakeVersionStore) GetExcluded(_ context.Context, gatewayID string) ([]excludedResource, error) {
+	excluded := make([]excludedResource, 0, len(f.excluded[gatewayID]))
+	for _, resource := range f.excluded[gatewayID] {
+		excluded = append(excluded, resource)
+	}
+	sort.Slice(excluded, func(i, j int) bool { return excluded[i].Key < excluded[j].Key })
+	return excluded, nil
+}
+
+func (f *fakeVersionStore) SetExcluded(_ context.Context, gatewayID string, exclude []excludedResource,
+	include []string) error {
+	if f.excludeErr != nil {
+		return f.excludeErr
+	}
+	if f.excluded == nil {
+		f.excluded = map[string]map[string]excludedResource{}
+	}
+	if f.excluded[gatewayID] == nil {
+		f.excluded[gatewayID] = map[string]excludedResource{}
+	}
+	for _, resource := range exclude {
+		f.excluded[gatewayID][resource.Key] = resource
+	}
+	for _, key := range include {
+		delete(f.excluded[gatewayID], key)
+	}
+	return nil
+}
+
+func (f *fakeVersionStore) DeleteExcluded(_ context.Context, gatewayID string) error {
+	delete(f.excluded, gatewayID)
+	return nil
+}
+
+// fakeExporter answers a capture with canned files, and a value capture with canned values.
 type fakeExporter struct {
 	response *export.ExportResponse
 	err      *tidcommon.ServiceError
 	asked    *export.ExportRequest
+
+	variables map[string]string
+	secrets   map[string]string
+	valuesErr error
+	// valuesOf records the resource type and resource each value capture asked about.
+	valuesOf []valuesRequest
+	// valuesCtxDone records whether a value capture asked with a context that was already done.
+	valuesCtxDone bool
+}
+
+type valuesRequest struct {
+	resourceType string
+	resource     interface{}
 }
 
 func (f *fakeExporter) ExportResources(_ context.Context,
 	request *export.ExportRequest) (*export.ExportResponse, *tidcommon.ServiceError) {
 	f.asked = request
 	return f.response, f.err
+}
+
+func (f *fakeExporter) PlaceholderValues(ctx context.Context, resourceType string,
+	resource interface{}) (map[string]string, map[string]string, error) {
+	f.valuesOf = append(f.valuesOf, valuesRequest{resourceType: resourceType, resource: resource})
+	f.valuesCtxDone = f.valuesCtxDone || ctx.Err() != nil
+	return f.variables, f.secrets, f.valuesErr
 }
 
 // fakeGatewayClient records what an apply sends a gateway.
@@ -335,14 +394,14 @@ func TestAVersionIsNamedByAPrefixOfItsHash(t *testing.T) {
 func TestACaptureSkipsWhatTheExportCouldNotWrite(t *testing.T) {
 	f := newVersionFixture(t)
 	f.exporter.response = exportOf("", "ou-a")
-	failed := export.ExportError{ResourceType: "user", ResourceID: "user-1", Error: "Missing username"}
-	f.exporter.response.Summary = &export.ExportSummary{Errors: []export.ExportError{failed}}
+	failed := declarativeresource.ExportError{ResourceType: "user", ResourceID: "user-1", Error: "Missing username"}
+	f.exporter.response.Summary = &export.ExportSummary{Errors: []declarativeresource.ExportError{failed}}
 
 	v, svcErr := f.svc.Capture(context.Background(), CaptureRequest{})
 
 	require.Nil(t, svcErr)
 	assert.Contains(t, v.Resources, "ou-a")
-	assert.Equal(t, []export.ExportError{failed}, v.Skipped)
+	assert.Equal(t, []declarativeresource.ExportError{failed}, v.Skipped)
 	require.Len(t, f.versions.versions, 1)
 }
 
@@ -515,6 +574,25 @@ func TestAnApplyWhoseRemovalsAreUnconfirmedIsNotRecorded(t *testing.T) {
 	assert.Equal(t, 1, held.AppliedVersion)
 }
 
+// A version read on its own says where it refers to each value; a listing does not.
+func TestAVersionReadSaysWhereItRefersToValues(t *testing.T) {
+	f := newVersionFixture(t)
+	f.captureReferring(t)
+
+	v, svcErr := f.svc.GetVersion(context.Background(), "latest")
+
+	require.Nil(t, svcErr)
+	assert.Equal(t, []ValueReference{
+		{Name: "APP_CLIENT_ID", Kind: ReferenceVariable, ResourceType: "application", ResourceID: "app-1",
+			ResourceName: "app", Field: "client_id"},
+		{Name: "APP_SECRET", Kind: ReferenceSecret, ResourceType: "application", ResourceID: "app-1",
+			ResourceName: "app", Field: "client_secret"},
+	}, v.References)
+	listed, svcErr := f.svc.ListVersions(context.Background())
+	require.Nil(t, svcErr)
+	assert.Empty(t, listed[0].References)
+}
+
 // A dry run reaches the gateway as one and records nothing.
 func TestADryRunRecordsNothing(t *testing.T) {
 	f := newVersionFixture(t)
@@ -654,7 +732,11 @@ func TestApplyIsRefusedWhileTheGatewayLacksAValue(t *testing.T) {
 
 	result, svcErr := f.svc.Apply(context.Background(), "gw-1", ApplyRequest{DryRun: true})
 	require.Nil(t, svcErr)
-	assert.Equal(t, &MissingValues{Secrets: []string{"APP_SECRET"}}, result.Missing)
+	assert.Equal(t, &MissingValues{
+		Secrets: []string{"APP_SECRET"},
+		References: []ValueReference{{Name: "APP_SECRET", Kind: ReferenceSecret, ResourceType: "application",
+			ResourceID: "app-1", ResourceName: "app", Field: "client_secret"}},
+	}, result.Missing, "a missing value does not say what it is for")
 	assert.True(t, f.client.last().DryRun)
 }
 
@@ -721,4 +803,39 @@ func TestApplyReportsAnotherApplyFinishingFirst(t *testing.T) {
 
 	require.NotNil(t, svcErr)
 	assert.Equal(t, ErrorAppliedChanged.Code, svcErr.Code)
+}
+
+// The configuration as it stands says where it refers to each value before anything is captured, and
+// reading it keeps no version.
+func TestTheCurrentConfigurationSaysWhereItRefersToValuesWithoutCapturing(t *testing.T) {
+	f := newVersionFixture(t)
+	f.exporter.response = &export.ExportResponse{Files: []export.ExportFile{{Content: "resource_type: application\n" +
+		"id: app-1\nname: Orders\nclientId: var:APPLICATION_ORDERS_CLIENT_ID\nredirectUris:\n" +
+		"  - var:APPLICATION_ORDERS_REDIRECT_URIS"}}}
+
+	v, svcErr := f.svc.GetVersion(context.Background(), " current ")
+
+	require.Nil(t, svcErr)
+	assert.Zero(t, v.Seq)
+	assert.Equal(t, versionHash(v.Resources), v.Hash, "the hash is not the one a capture would give it")
+	assert.Equal(t, []ValueReference{
+		{Name: "APPLICATION_ORDERS_CLIENT_ID", Kind: ReferenceVariable, ResourceType: "application",
+			ResourceID: "app-1", ResourceName: "Orders", Field: "clientId"},
+		{Name: "APPLICATION_ORDERS_REDIRECT_URIS", Kind: ReferenceVariable, ResourceType: "application",
+			ResourceID: "app-1", ResourceName: "Orders", Field: "redirectUris", List: true},
+	}, v.References)
+	listed, svcErr := f.svc.ListVersions(context.Background())
+	require.Nil(t, svcErr)
+	assert.Empty(t, listed, "reading the current configuration captured a version")
+}
+
+// A failed export fails the read as it fails a capture.
+func TestTheCurrentConfigurationReportsAFailedExport(t *testing.T) {
+	f := newVersionFixture(t)
+	f.exporter.err = &tidcommon.InternalServerError
+
+	_, svcErr := f.svc.GetVersion(context.Background(), "current")
+
+	require.NotNil(t, svcErr)
+	assert.Equal(t, tidcommon.InternalServerError.Code, svcErr.Code)
 }

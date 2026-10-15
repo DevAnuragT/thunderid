@@ -24,7 +24,7 @@ import (
 type EntityServiceInterface interface {
 	// Core CRUD
 	CreateEntity(ctx context.Context, entity *providers.Entity,
-		systemCredentials json.RawMessage) (*providers.Entity, error)
+		systemCredentials json.RawMessage, link *providers.LinkedAccount) (*providers.Entity, error)
 	GetEntity(ctx context.Context, entityID string) (*providers.Entity, error)
 	GetCredentialsByType(ctx context.Context, entityID string,
 		credType string) ([]StoredCredential, error)
@@ -41,6 +41,9 @@ type EntityServiceInterface interface {
 
 	// Identification
 	IdentifyEntity(ctx context.Context, filters map[string]interface{}) (*string, error)
+	ResolveLinkedAccounts(ctx context.Context, idpID, sub string) ([]string, error)
+	GetLinkedEntities(ctx context.Context, idpID, sub string) ([]providers.Entity, error)
+	LinkAccount(ctx context.Context, entityID, idpID, sub string) error
 	SearchEntities(ctx context.Context, filters map[string]interface{}) ([]providers.Entity, error)
 
 	// Lists (category-scoped)
@@ -125,13 +128,27 @@ func newEntityService(
 	}
 }
 
-// CreateEntity creates a new entity.
+// CreateEntity creates a new entity, linked to the identity provider subject link names when it is
+// set. Links come only from link: any linkedIds in the entity's system attributes are dropped.
 // Uses a transaction to ensure the entity row and its indexed identifiers are created atomically.
 func (s *entityService) CreateEntity(ctx context.Context, entity *providers.Entity,
-	systemCredentials json.RawMessage) (*providers.Entity, error) {
+	systemCredentials json.RawMessage, link *providers.LinkedAccount) (*providers.Entity, error) {
 	if entity == nil {
 		return nil, ErrEntityNotFound
 	}
+	if link != nil && (link.IdpID == "" || link.Sub == "") {
+		return nil, ErrBadAttributesInRequest
+	}
+	sysAttrs, err := withoutLinkedIDs(entity.SystemAttributes)
+	if err != nil {
+		return nil, err
+	}
+	if link != nil {
+		if sysAttrs, err = withLinkedSubject(sysAttrs, link.IdpID, link.Sub); err != nil {
+			return nil, err
+		}
+	}
+	entity.SystemAttributes = sysAttrs
 
 	if entity.ID == "" {
 		id, err := sysutils.GenerateUUIDv7()
@@ -395,6 +412,53 @@ func (s *entityService) IdentifyEntity(ctx context.Context,
 		return nil, err
 	}
 	return id, nil
+}
+
+// ResolveLinkedAccounts returns the entities linked to an identity provider subject. A subject no
+// entity is linked to returns an empty list.
+func (s *entityService) ResolveLinkedAccounts(ctx context.Context, idpID, sub string) ([]string, error) {
+	if idpID == "" || sub == "" {
+		return nil, ErrBadAttributesInRequest
+	}
+	return s.store.ResolveLinkedAccounts(ctx, idpID, sub)
+}
+
+// GetLinkedEntities returns the entities linked to an identity provider subject, with their OUHandle
+// populated for disambiguation consumers.
+func (s *entityService) GetLinkedEntities(ctx context.Context, idpID, sub string) ([]providers.Entity, error) {
+	entityIDs, err := s.ResolveLinkedAccounts(ctx, idpID, sub)
+	if err != nil {
+		return nil, err
+	}
+	entities, err := s.store.GetEntitiesByIDs(ctx, entityIDs)
+	if err != nil {
+		return nil, err
+	}
+	s.populateOUHandles(ctx, entities)
+	return entities, nil
+}
+
+// LinkAccount records that an entity authenticates as the given subject at the given connection.
+// Other entities may hold the same subject.
+func (s *entityService) LinkAccount(ctx context.Context, entityID, idpID, sub string) error {
+	if entityID == "" || idpID == "" || sub == "" {
+		return ErrBadAttributesInRequest
+	}
+	s.logger.Debug(ctx, "Linking account", log.MaskedString("id", entityID),
+		log.String("idpId", idpID))
+
+	return s.transactioner.Transact(ctx, func(txCtx context.Context) error {
+		current, err := s.store.LockEntity(txCtx, entityID)
+		if err != nil {
+			return err
+		}
+
+		merged, err := withLinkedSubject(current.SystemAttributes, idpID, sub)
+		if err != nil || merged == nil {
+			return err
+		}
+		return s.store.UpdateSystemAttributes(txCtx, entityID, merged)
+	})
 }
 
 // SearchEntities searches for all entities matching the provided filters. The returned
@@ -695,9 +759,13 @@ func (s *entityService) UpdateCredentials(ctx context.Context, entityID string,
 		}
 
 		// Record the change so the refresh grant can reject tokens established before it. Every
-		// password change lands here, and the marker shares this transaction with the write.
-		markedAttrs, err := setCredentialUpdatedAt(
-			existingWithCreds.Entity.SystemAttributes, time.Now().UTC())
+		// password change lands here, and the marker shares this transaction with the write. The blob
+		// is read under the entity's lock, since a cached copy could drop a concurrent link write.
+		locked, err := s.store.LockEntity(txCtx, entityID)
+		if err != nil {
+			return err
+		}
+		markedAttrs, err := setCredentialUpdatedAt(locked.SystemAttributes, time.Now().UTC())
 		if err != nil {
 			return err
 		}
@@ -856,12 +924,94 @@ func (s *entityService) UpdateSystemCredentials(ctx context.Context, entityID st
 		if _, rotatesClientSecret := updates[authnprovidercm.CredentialTypeClientSecret]; !rotatesClientSecret {
 			return nil
 		}
-		markedAttrs, err := setCredentialUpdatedAt(existing.Entity.SystemAttributes, time.Now().UTC())
+		locked, err := s.store.LockEntity(txCtx, entityID)
+		if err != nil {
+			return err
+		}
+		markedAttrs, err := setCredentialUpdatedAt(locked.SystemAttributes, time.Now().UTC())
 		if err != nil {
 			return err
 		}
 		return s.store.UpdateSystemAttributes(txCtx, entityID, markedAttrs)
 	})
+}
+
+// withoutLinkedIDs returns systemAttributes without their linkedIds, unchanged when there are none.
+func withoutLinkedIDs(systemAttributes json.RawMessage) (json.RawMessage, error) {
+	if len(systemAttributes) == 0 {
+		return systemAttributes, nil
+	}
+	attrs := map[string]interface{}{}
+	if err := json.Unmarshal(systemAttributes, &attrs); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal system attributes: %w", err)
+	}
+	if _, ok := attrs[authnprovidercm.SystemAttrLinkedIDs]; !ok {
+		return systemAttributes, nil
+	}
+	delete(attrs, authnprovidercm.SystemAttrLinkedIDs)
+	stripped, err := json.Marshal(attrs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal system attributes: %w", err)
+	}
+	return stripped, nil
+}
+
+// withLinkedSubject returns systemAttributes with the subject added to its linkedIds at the
+// connection, or nil when the subject is already there.
+func withLinkedSubject(systemAttributes json.RawMessage, idpID, sub string) (json.RawMessage, error) {
+	attrs := map[string]interface{}{}
+	if len(systemAttributes) > 0 {
+		if err := json.Unmarshal(systemAttributes, &attrs); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal system attributes: %w", err)
+		}
+	}
+
+	links, err := objectAt(attrs, authnprovidercm.SystemAttrLinkedIDs)
+	if err != nil {
+		return nil, err
+	}
+	if hasLinkedSubject(links, idpID, sub) {
+		return nil, nil
+	}
+	if len(linkedIdentifierRows(links)) >= maxIndexedValuesPerAttribute {
+		return nil, fmt.Errorf("%w: %s holds at most %d links", ErrIndexedValueLimitExceeded,
+			authnprovidercm.SystemAttrLinkedIDs, maxIndexedValuesPerAttribute)
+	}
+
+	subjects, err := objectAt(links, idpID)
+	if err != nil {
+		return nil, err
+	}
+	subjects[sub] = map[string]interface{}{}
+	links[idpID] = subjects
+	attrs[authnprovidercm.SystemAttrLinkedIDs] = links
+
+	merged, err := json.Marshal(attrs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal system attributes: %w", err)
+	}
+	return merged, nil
+}
+
+// hasLinkedSubject reports whether a subject is already recorded for a connection.
+func hasLinkedSubject(links map[string]interface{}, idpID, sub string) bool {
+	subjects, _ := links[idpID].(map[string]interface{})
+	_, ok := subjects[sub]
+	return ok
+}
+
+// objectAt returns the object stored under key, or an empty one when the key is absent or null. A
+// value of any other shape is an error, since replacing it would silently drop what it holds.
+func objectAt(m map[string]interface{}, key string) (map[string]interface{}, error) {
+	raw := m[key]
+	if raw == nil {
+		return map[string]interface{}{}, nil
+	}
+	obj, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("stored linked account entry %q is not an object", key)
+	}
+	return obj, nil
 }
 
 // populateOUHandles resolves OU handles for a slice of entities in-place.
@@ -970,24 +1120,50 @@ func (s *entityService) validateEntityType(
 // attributes into a replacement blob. Both write paths replace the blob wholesale, and the services
 // that own an entity rebuild it from their own model, so without this a rename would drop the
 // credential-change marker this package writes and revive the tokens a credential change invalidated.
+// A reserved key the caller sends is replaced by the stored value, or dropped when none is stored, so
+// only this package writes them. The entity is read under its lock rather than from the cache, so a
+// concurrent write to a reserved key is carried across instead of being overwritten.
 func (s *entityService) mergeReservedAttributes(ctx context.Context, entityID string,
 	incoming json.RawMessage) (json.RawMessage, error) {
-	current, err := s.store.GetEntity(ctx, entityID)
+	current, err := s.store.LockEntity(ctx, entityID)
 	if err != nil {
 		return nil, err
 	}
-	marker := credentialUpdatedAtOf(current.SystemAttributes)
-	if marker == "" {
-		return incoming, nil
+	preserved, err := reservedAttributesOf(current.SystemAttributes)
+	if err != nil {
+		return nil, err
 	}
 
-	attrs := map[string]interface{}{}
+	var attrs map[string]json.RawMessage
 	if len(incoming) > 0 {
 		if err := json.Unmarshal(incoming, &attrs); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal system attributes: %w", err)
 		}
 	}
-	attrs[authnprovidercm.SystemAttrCredentialUpdatedAt] = marker
+	if attrs == nil {
+		attrs = map[string]json.RawMessage{}
+	}
+
+	changed := false
+	for _, key := range reservedSystemAttributes {
+		value, stored := preserved[key]
+		if !stored {
+			if _, sent := attrs[key]; sent {
+				delete(attrs, key)
+				changed = true
+			}
+			continue
+		}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal system attribute %q: %w", key, err)
+		}
+		attrs[key] = raw
+		changed = true
+	}
+	if !changed {
+		return incoming, nil
+	}
 
 	merged, err := json.Marshal(attrs)
 	if err != nil {
@@ -996,18 +1172,25 @@ func (s *entityService) mergeReservedAttributes(ctx context.Context, entityID st
 	return merged, nil
 }
 
-// credentialUpdatedAtOf returns the credential-change marker in the given system attributes, or empty
-// when none is recorded.
-func credentialUpdatedAtOf(systemAttributes json.RawMessage) string {
+// reservedAttributesOf returns the reserved keys present in the given system attributes.
+// An unparsable blob is an error rather than an empty result, since replacing it would silently drop
+// the reserved keys it holds.
+func reservedAttributesOf(systemAttributes json.RawMessage) (map[string]interface{}, error) {
 	if len(systemAttributes) == 0 {
-		return ""
+		return nil, nil
 	}
 	var attrs map[string]interface{}
 	if err := json.Unmarshal(systemAttributes, &attrs); err != nil {
-		return ""
+		return nil, fmt.Errorf("failed to unmarshal stored system attributes: %w", err)
 	}
-	marker, _ := attrs[authnprovidercm.SystemAttrCredentialUpdatedAt].(string)
-	return marker
+
+	preserved := map[string]interface{}{}
+	for _, key := range reservedSystemAttributes {
+		if value, ok := attrs[key]; ok {
+			preserved[key] = value
+		}
+	}
+	return preserved, nil
 }
 
 // setCredentialUpdatedAt returns systemAttributes with the credential-change marker set to at. The

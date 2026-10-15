@@ -6,6 +6,7 @@ package application
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 
@@ -157,6 +158,7 @@ func (suite *InitTestSuite) TestInitialize_WithDeclarativeResourcesDisabled() {
 		nil, // serverConfigSvc - not needed for this test
 		nil, // artifactLifetime - not needed for this test
 		newSharingServiceStub(suite.T()),
+		nil, // valueCapturer - not needed for this test
 	)
 
 	// Assert
@@ -202,6 +204,7 @@ func (suite *InitTestSuite) TestInitialize_WithMCPServer() {
 		nil, // serverConfigSvc - not needed for this test
 		nil, // artifactLifetime - not needed for this test
 		newSharingServiceStub(suite.T()),
+		nil, // valueCapturer - not needed for this test
 	)
 
 	// Assert
@@ -561,6 +564,42 @@ func TestRegisterRoutes_Standalone(t *testing.T) {
 	})
 }
 
+// TestRegisterRoutes_SharingPreflight checks that each sharing path's preflight is served by a
+// route whose allowed methods cover what that path accepts. The subtree route under /applications/
+// allows GET, PUT and DELETE, so a collection taking POST needs a route of its own.
+func TestRegisterRoutes_SharingPreflight(t *testing.T) {
+	mux := http.NewServeMux()
+	registerRoutes(mux, &applicationHandler{})
+
+	tests := []struct {
+		path    string
+		pattern string
+	}{
+		{
+			path:    "/applications/app-1/sharing-policies",
+			pattern: "OPTIONS /applications/{id}/sharing-policies",
+		},
+		{
+			path:    "/applications/app-1/sharing-policies/policy-1",
+			pattern: "OPTIONS /applications/",
+		},
+		{
+			path:    "/applications/app-1/overlay-rules",
+			pattern: "OPTIONS /applications/",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodOptions, tt.path, nil)
+			req.Header.Set("Origin", "http://localhost:3000")
+			req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+
+			_, pattern := mux.Handler(req)
+			assert.Equal(t, tt.pattern, pattern)
+		})
+	}
+}
+
 // TestInitialize_Standalone tests Initialize function without suite dependencies
 func TestInitialize_Standalone(t *testing.T) {
 	// Setup minimal config for testing
@@ -595,6 +634,7 @@ func TestInitialize_Standalone(t *testing.T) {
 		nil, // serverConfigSvc - not needed for this test
 		nil, // artifactLifetime - not needed for this test
 		newSharingServiceStub(t),
+		nil, // valueCapturer - not needed for this test
 	)
 
 	// Assert
@@ -648,6 +688,7 @@ func TestInitialize_WithDeclarativeResources_Standalone(t *testing.T) {
 		nil, // serverConfigSvc - not needed for this test
 		nil, // artifactLifetime - not needed for this test
 		newSharingServiceStub(t),
+		nil, // valueCapturer - not needed for this test
 	)
 
 	// Assert
@@ -882,7 +923,7 @@ func (suite *InitTestSuite) TestInitializeReportsAFailureLoadingApplications() {
 	service, _, err := Initialize(
 		http.NewServeMux(), nil, mockEntityService,
 		inboundclientmock.NewInboundClientServiceInterfaceMock(suite.T()),
-		nil, nil, nil, nil, nil, newSharingServiceStub(suite.T()),
+		nil, nil, nil, nil, nil, newSharingServiceStub(suite.T()), nil,
 	)
 
 	assert.ErrorIs(suite.T(), err, assert.AnError)
@@ -904,7 +945,7 @@ func (suite *InitTestSuite) TestInitializeReportsAFailureLoadingSharingPolicies(
 
 	service, _, err := Initialize(
 		http.NewServeMux(), nil, mockEntityService, mockInboundClient,
-		nil, nil, nil, nil, nil, sharingService,
+		nil, nil, nil, nil, nil, sharingService, nil,
 	)
 
 	assert.ErrorIs(suite.T(), err, assert.AnError)

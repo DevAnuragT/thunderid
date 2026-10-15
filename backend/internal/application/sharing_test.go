@@ -85,8 +85,7 @@ name: ` + testAppName + `
 ouId: ` + testAppOwner + `
 sharingPolicies:
   - id: ` + testPolicyID + `
-    targetOuScope:
-      allOus: true
+    allUnits:
       excludedOuIds:
         - m2m-child-b
 `)
@@ -97,6 +96,8 @@ sharingPolicies:
 	s.Require().Len(request.SharingPolicies, 1)
 	policy := request.SharingPolicies[0]
 	s.Equal(testPolicyID, policy.ID)
-	s.True(policy.TargetOUScope.AllOUs)
-	s.Equal([]string{"m2m-child-b"}, policy.TargetOUScope.ExcludedOUIDs)
+	s.Require().NotNil(policy.AllUnits)
+	s.Equal([]string{"m2m-child-b"}, policy.AllUnits.ExcludedOUIDs)
+	s.Nil(policy.ChildUnits)
+	s.Nil(policy.OtherTreeRoots)
 }

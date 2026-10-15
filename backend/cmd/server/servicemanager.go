@@ -205,7 +205,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 	entityProvider := entityprovider.InitializeEntityProvider(entityService)
 
 	userService, ouUserResolver, userExporter, err := user.Initialize(
-		mux, entityService, ouService, entityTypeService, ouAuthzService,
+		mux, entityService, ouService, entityTypeService, ouAuthzService, nil,
 	)
 	fatalOnError(ctx, logger, err, "Failed to initialize UserService")
 	exporters = append(exporters, userExporter)
@@ -222,7 +222,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 	authZENPDPService, err := authzenpdp.Initialize(runtime.Config.AuthZENPDP, entityTypeService)
 	fatalOnError(ctx, logger, err, "Failed to initialize AuthZENPDPService")
 
-	resourceService, resourceExporter, err := resource.Initialize(mux, ouService, authZENPDPService)
+	resourceService, resourceExporter, err := resource.Initialize(mux, ouService, authZENPDPService, nil)
 	fatalOnError(ctx, logger, err, "Failed to initialize Resource Service")
 	exporters = append(exporters, resourceExporter)
 
@@ -265,13 +265,15 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 	notifSenderMgtSvc, notifOTPService, notifSenderSvc, err := notification.Initialize(jwtService)
 	fatalOnError(ctx, logger, err, "Failed to initialize NotificationService")
 
-	notifTemplateSvc, notifTemplateRenderer, err := notificationtemplate.Initialize(mux, cacheManager, i18nService)
+	notifTemplateSvc, notifTemplateRenderer, notifTemplateExporter, err :=
+		notificationtemplate.Initialize(mux, cacheManager, ouService, i18nService)
 	fatalOnError(ctx, logger, err, "Failed to initialize NotificationTemplateService")
+	exporters = append(exporters, notifTemplateExporter)
 
 	// Register the /connections API as a thin layer over the identity-provider and
 	// notification-sender services.
 	connectionExporter, err := connection.Initialize(
-		mux, idpService, notifSenderMgtSvc, resourceService, authZENPDPService)
+		mux, idpService, notifSenderMgtSvc, resourceService, authZENPDPService, nil)
 	fatalOnError(ctx, logger, err, "Failed to initialize connection declarative resources")
 	exporters = append(exporters, connectionExporter)
 
@@ -282,7 +284,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 	otpCoreService := otp.Initialize(notifOTPService)
 
 	// Initialize federated authentication services.
-	oauthAuthnService := authnOAuth.Initialize(idpService, entityProvider)
+	oauthAuthnService := authnOAuth.Initialize(idpService)
 	oidcAuthnService := authnOIDC.Initialize(oauthAuthnService, jwtService)
 	googleAuthnService := google.Initialize(oidcAuthnService, jwtService)
 	githubAuthnService := github.Initialize(oauthAuthnService)
@@ -335,7 +337,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 
 	_, directAuthGuard := authn.Initialize(mux, mcpServer, idpService, jwtService, authnProvider, authAssertGen,
 		otpCoreService, notifSenderSvc, notifTemplateRenderer, magicLinkService, oauthAuthnService,
-		oidcAuthnService, googleAuthnService, githubAuthnService, authnconfig.FromServerRuntime())
+		oidcAuthnService, googleAuthnService, githubAuthnService, entityTypeService, authnconfig.FromServerRuntime())
 
 	// AuthZEN access-evaluation endpoints are Direct API endpoints, so they reuse the Direct Auth
 	// guard created by the authn service.
@@ -374,9 +376,8 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 	csp.InitializeConfigReader(serverConfigService)
 
 	flowConfig := flowconfig.FromServerRuntime()
-	tokenFamilyRevocationTTL := time.Duration(runtime.Config.OAuth.RefreshToken.ValidityPeriod) * time.Second
-	revocationEnforcer, revocationSvc := revocation.Initialize(jwtService, observabilitySvc,
-		tokenFamilyRevocationTTL, runtime.Config.OAuth.Revocation.TokenFamily.OnExplicitRevokeEnabled())
+	revocationEnforcer, revocationSvc, err := revocation.Initialize(oauthCfg, jwtService, observabilitySvc)
+	fatalOnError(ctx, logger, err, "Failed to initialize revocation service")
 	sessionRevoker := sessionCriteriaRevoker{revoker: revocationSvc}
 	// The termination hook is kept for the back-channel logout dispatcher, which OAuth builds and which
 	// is added to the hook once OAuth is initialized.
@@ -413,6 +414,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 			ResourceService:       resourceServerProvider,
 			UserService:           userService,
 			CriteriaRevoker:       revocationSvc,
+			ResourceMgtService:    resourceService,
 		},
 		interceptor.InterceptorDependencies{},
 		flowConfig,
@@ -463,7 +465,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 		func(client *providers.OAuthClient) time.Duration {
 			return tokenservice.ArtifactLifetime(oauthCfg, client)
 		},
-		sharingService)
+		sharingService, nil)
 	fatalOnError(ctx, logger, err, "Failed to initialize ApplicationService")
 	// Two-phase initialization: inject the application service into the executors that act on it.
 	fatalOnError(ctx, logger, executor.SetApplicationProvider(execRegistry, applicationService),
@@ -471,7 +473,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 	exporters = append(exporters, applicationExporter)
 
 	agentService, agentExporter, err := agent.Initialize(mux, entityService, inboundClientService, ouService,
-		roleService, ouAuthzService)
+		roleService, ouAuthzService, nil, entityTypeService)
 	fatalOnError(ctx, logger, err, "Failed to initialize AgentService")
 	exporters = append(exporters, agentExporter)
 
@@ -497,7 +499,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 		resource:      resourceService,
 		notifTemplate: notifTemplateSvc,
 	}, applicationService, agentService, flowMgtService, roleAssignmentService, roleService,
-		groupService, ouService, ouUserResolver, ouGroupResolver, resourceService)
+		groupService, ouService, ouUserResolver, ouGroupResolver, resourceService, sharingService)
 
 	// Initialize design resolve service for theme and layout resolution
 	designResolveService := resolve.Initialize(mux, themeMgtService, layoutMgtService, applicationService)
@@ -505,7 +507,8 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 	// Inject the design resolve service now that it exists (the translation resolver was passed at init).
 	notifTemplateRenderer.SetDesignResolver(designResolveService)
 
-	actorProvider := actorprovider.Initialize(inboundClientService, entityProvider, authnProvider, roleService)
+	actorProvider := actorprovider.Initialize(
+		inboundClientService, entityProvider, authnProvider, roleService, entityTypeService)
 
 	// Initialize flow metadata service
 	_ = flowmeta.Initialize(mux, actorProvider, ouProvider, designResolveService, i18nService)
@@ -515,7 +518,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 
 	// The gateways this control plane administers. Registration is bounded by server.max_gateways,
 	// which is one unless a deployment raises it.
-	gatewayService, err := gateway.Initialize(mux, exportService)
+	gatewayService, err := gateway.Initialize(mux, exportService, nil, exporters)
 	fatalOnError(ctx, logger, err, "Failed to initialize gateway service")
 
 	// Initialize import service
@@ -542,14 +545,18 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 		gatewayService,
 		notifTemplateSvc,
 		authZENPDPService,
+		sharingService,
 		// References in imported configuration are replaced with what this deployment's store holds.
 		secretresolver.New(variablestore.Lookup(references)),
 	)
 
 	attestationProvider := initAttestationProvider(ctx, logger, runtimeCryptoSvc)
+	// The flow endpoint and the authorize endpoint share one SSO handle transport. The SSO cookie is
+	// marked Secure unless the deployment is configured to serve over plain HTTP.
+	ssoTransport := flowsession.NewHandleTransport(flowsession.TransportConfig{SecureCookies: flowConfig.SecureCookies})
 	flowExecService, err := flowexec.Initialize(mux, flowMgtService, actorProvider,
 		execRegistry, interceptorRegistry, observabilitySvc, runtimeCryptoSvc, attestationProvider,
-		graphBuilder, jwtService, runtimeStoreProvider, transactioner, serverConfigService, flowConfig)
+		graphBuilder, jwtService, runtimeStoreProvider, transactioner, serverConfigService, ssoTransport, flowConfig)
 	fatalOnError(ctx, logger, err, "Failed to initialize flow execution service")
 
 	// Initialize OAuth services.
@@ -557,7 +564,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 		flowExecService, observabilitySvc, runtimeCryptoSvc, ouProvider, attributeCacheService, authZService,
 		resourceServerProvider, i18nService, idpService, dpopVerifier,
 		runtimeStoreProvider, transactioner, revocationEnforcer, revocationSvc,
-		sessionService, flowMgtService, oauthCfg)
+		sessionService, ssoTransport, flowMgtService, oauthCfg)
 	fatalOnError(ctx, logger, err, "Failed to initialize OAuth services")
 	if dispatcher != nil {
 		err = terminationHook.Add(dispatcher)

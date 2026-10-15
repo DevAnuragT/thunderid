@@ -20,10 +20,10 @@ import (
 // /ou/{ouId}/oauth2/token, against the declaratively defined M2M service applications in
 // resources/declarative_resources/applications/m2m-*.yaml.
 //
-// The applications are owned by decl-m2m-root and shared outward three different ways: every
-// organization unit in the deployment, the owning subtree, and the owning subtree with one branch
-// carved out. That is what lets a single credential pair serve many organizations while remaining
-// invisible inside them.
+// The applications are owned by decl-m2m-root and shared outward four different ways: every
+// organization unit in the deployment, the owning subtree, the owning subtree with one branch
+// carved out, and named children one by one. That is what lets a single credential pair serve many
+// organizations while remaining invisible inside them.
 type M2MOUScopedTokenTestSuite struct {
 	suite.Suite
 }
@@ -33,9 +33,11 @@ func TestM2MOUScopedTokenTestSuite(t *testing.T) {
 }
 
 const (
-	m2mRootOUID   = "decl-m2m-root"
-	m2mChildAOUID = "decl-m2m-child-a"
-	m2mChildBOUID = "decl-m2m-child-b"
+	m2mRootOUID        = "decl-m2m-root"
+	m2mChildAOUID      = "decl-m2m-child-a"
+	m2mChildBOUID      = "decl-m2m-child-b"
+	m2mChildCOUID      = "decl-m2m-child-c"
+	m2mGrandchildAOUID = "decl-m2m-grandchild-a"
 
 	m2mAllOUsClientID     = "decl-m2m-all-ous-client"
 	m2mAllOUsSecret       = "decl-m2m-all-ous-secret"
@@ -43,6 +45,8 @@ const (
 	m2mSubtreeSecret      = "decl-m2m-subtree-secret"
 	m2mCarvedOutClientID  = "decl-m2m-carved-out-client"
 	m2mCarvedOutSecret    = "decl-m2m-carved-out-secret"
+	m2mSelectedClientID   = "decl-m2m-selected-client"
+	m2mSelectedSecret     = "decl-m2m-selected-secret"
 	unrelatedDeclOUHandle = "decl-ou-1"
 )
 
@@ -92,7 +96,7 @@ func (suite *M2MOUScopedTokenTestSuite) TestBareEndpointStillWorks() {
 	suite.NotEmpty(body["access_token"])
 }
 
-// TestAllOUsPolicyReachesEveryOU proves an allOus policy lets the application be used for any
+// TestAllOUsPolicyReachesEveryOU proves an allUnits policy lets the application be used for any
 // organization unit, including ones in an unrelated tree.
 func (suite *M2MOUScopedTokenTestSuite) TestAllOUsPolicyReachesEveryOU() {
 	for _, ouID := range []string{m2mRootOUID, m2mChildAOUID, m2mChildBOUID, unrelatedDeclOUHandle} {
@@ -113,7 +117,7 @@ func (suite *M2MOUScopedTokenTestSuite) TestOwnerMayAlwaysNameItself() {
 	suite.NotEmpty(body["access_token"])
 }
 
-// TestSubtreePolicyCoversChildren proves an allChildren policy reaches the owning root's descendants.
+// TestSubtreePolicyCoversChildren proves an all child units policy reaches the owning root's descendants.
 func (suite *M2MOUScopedTokenTestSuite) TestSubtreePolicyCoversChildren() {
 	for _, ouID := range []string{m2mChildAOUID, m2mChildBOUID} {
 		suite.Run(ouID, func() {
@@ -125,7 +129,7 @@ func (suite *M2MOUScopedTokenTestSuite) TestSubtreePolicyCoversChildren() {
 	}
 }
 
-// TestSubtreePolicyDoesNotReachAnotherTree proves allChildren stays inside the owning subtree.
+// TestSubtreePolicyDoesNotReachAnotherTree proves all child units stays inside the owning subtree.
 func (suite *M2MOUScopedTokenTestSuite) TestSubtreePolicyDoesNotReachAnotherTree() {
 	status, body := suite.requestToken(unrelatedDeclOUHandle, m2mSubtreeClientID, m2mSubtreeSecret)
 
@@ -146,14 +150,52 @@ func (suite *M2MOUScopedTokenTestSuite) TestCarveOutExcludesOneBranch() {
 		"a carved-out organization unit is refused exactly as an unreached one is")
 }
 
+// TestSelectivePolicyReachesOnlyTheNamedChildren is the opposite of the carve-out: instead of
+// granting the subtree and withholding one branch, the policy names the children it grants and
+// nothing else. A sibling that exists in the same tree but appears in no target is refused.
+func (suite *M2MOUScopedTokenTestSuite) TestSelectivePolicyReachesOnlyTheNamedChildren() {
+	for _, ouID := range []string{m2mChildAOUID, m2mChildBOUID} {
+		suite.Run("named "+ouID, func() {
+			status, body := suite.requestToken(ouID, m2mSelectedClientID, m2mSelectedSecret)
+
+			suite.Equal(http.StatusOK, status, "body: %v", body)
+			suite.NotEmpty(body["access_token"])
+		})
+	}
+
+	suite.Run("unnamed sibling "+m2mChildCOUID, func() {
+		status, body := suite.requestToken(m2mChildCOUID, m2mSelectedClientID, m2mSelectedSecret)
+
+		suite.Equal(http.StatusBadRequest, status, "body: %v", body)
+		suite.Equal("unauthorized_client", body["error"],
+			"a sibling no target names is refused exactly as a unit in another tree is")
+	})
+}
+
+// TestSelectivePolicyStopsAtTheNamedChild is what separates a unit reach from a subtree one:
+// naming an organization unit grants that unit alone, never the units beneath it. The subtree
+// application, which does cascade, is checked against the same unit so the difference is the policy
+// shape rather than anything about the organization unit itself.
+func (suite *M2MOUScopedTokenTestSuite) TestSelectivePolicyStopsAtTheNamedChild() {
+	status, body := suite.requestToken(m2mGrandchildAOUID, m2mSelectedClientID, m2mSelectedSecret)
+	suite.Equal(http.StatusBadRequest, status, "body: %v", body)
+	suite.Equal("unauthorized_client", body["error"],
+		"naming a child does not hand the resource to everything beneath it")
+
+	cascaded, cascadedBody := suite.requestToken(m2mGrandchildAOUID, m2mSubtreeClientID, m2mSubtreeSecret)
+	suite.Equal(http.StatusOK, cascaded, "body: %v", cascadedBody)
+	suite.NotEmpty(cascadedBody["access_token"],
+		"the same unit is reached by a policy that does cascade, so the refusal above is the policy shape")
+}
+
 // TestUnknownOUIsRefused proves an organization unit id that resolves to nothing is refused, under a
-// blanket allOus policy just as much as a narrower one. allOus means "every organization unit in the
+// blanket allUnits policy just as much as a narrower one. allUnits means "every organization unit in the
 // deployment", and a policy check alone cannot reject an id that names none of them, so the accessing
 // organization unit is resolved before any policy is consulted.
 func (suite *M2MOUScopedTokenTestSuite) TestUnknownOUIsRefused() {
 	for _, tc := range []struct{ name, clientID, secret string }{
 		{"carved-out policy", m2mCarvedOutClientID, m2mCarvedOutSecret},
-		{"allOus policy", m2mAllOUsClientID, m2mAllOUsSecret},
+		{"allUnits policy", m2mAllOUsClientID, m2mAllOUsSecret},
 	} {
 		suite.Run(tc.name, func() {
 			status, body := suite.requestToken("no-such-ou", tc.clientID, tc.secret)
