@@ -3778,7 +3778,7 @@ func idTokenClaims() *tokenservice.SubjectTokenClaims {
 }
 
 func (suite *TokenExchangeGrantHandlerTestSuite) stubSubjectToken(app *providers.OAuthClient, claims *tokenservice.SubjectTokenClaims) {
-	suite.mockTokenValidator.On("ValidateSubjectToken", mock.Anything, "some-id-token", app).
+	suite.mockTokenValidator.On("ValidateNativeSSOSubjectToken", mock.Anything, "some-id-token", app).
 		Return(claims, nil).Once()
 }
 

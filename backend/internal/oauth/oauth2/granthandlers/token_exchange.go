@@ -180,7 +180,14 @@ func (h *tokenExchangeGrantHandler) HandleGrant(ctx context.Context, tokenReques
 	// Validate and extract subject token claims. ValidateSubjectToken enforces the RFC 7009 deny list
 	// for self-issued tokens; a revoked token is rejected as invalid_request like any other invalid
 	// subject_token, while an unavailable deny list fails closed with server_error.
-	subjectClaims, err := h.tokenValidator.ValidateSubjectToken(ctx, tokenRequest.SubjectToken, oauthApp)
+	var subjectClaims *tokenservice.SubjectTokenClaims
+	var err error
+	if tokenRequest.ActorTokenType == string(constants.TokenTypeIdentifierDeviceSecret) {
+		// Native SSO: the ID token may have expired; the device secret bounds the exchange.
+		subjectClaims, err = h.tokenValidator.ValidateNativeSSOSubjectToken(ctx, tokenRequest.SubjectToken, oauthApp)
+	} else {
+		subjectClaims, err = h.tokenValidator.ValidateSubjectToken(ctx, tokenRequest.SubjectToken, oauthApp)
+	}
 	if err != nil {
 		logger.Debug(ctx, "Failed to validate subject token", log.Error(err))
 		switch {
