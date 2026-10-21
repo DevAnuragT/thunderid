@@ -193,6 +193,7 @@ const (
 	ErrorAccessDenied             string = "access_denied"
 	ErrorLoginRequired            string = "login_required"
 	ErrorConsentRequired          string = "consent_required"
+	ErrorInteractionRequired      string = "interaction_required"
 	ErrorAccountSelectionRequired string = "account_selection_required"
 	ErrorInvalidDPoPProof         string = "invalid_dpop_proof"
 	ErrorAuthorizationPending     string = "authorization_pending"

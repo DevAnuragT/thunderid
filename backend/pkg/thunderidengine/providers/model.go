@@ -1429,6 +1429,10 @@ type DeviceSecretParams struct {
 	Issuer         string                 `json:"iss"`
 	CnfJKT         string                 `json:"cnf_jkt"`
 	ExpiryDuration time.Duration          `json:"expiry_duration"`
+	// SessionID is the session identifier (sid) shared by the ID token and the device secret
+	// minted together. The token exchange refuses a device secret whose sid differs from the
+	// presented ID token's.
+	SessionID string `json:"sid"`
 }
 
 // DeviceSecretResult holds the generated device secret and its ds_hash.
@@ -1450,4 +1454,35 @@ type DeviceSecretClaims struct {
 	Issuer    string                 `json:"iss"`
 	ExpiresAt time.Time              `json:"exp"`
 	JTI       string                 `json:"jti"`
+	// SessionID is the sid the device secret was minted with; see DeviceSecretParams.SessionID.
+	SessionID string `json:"sid"`
+}
+
+// DerivedConsentRequest describes a Native SSO token exchange whose user consent is derived from
+// the consent the user gave the originating application rather than captured interactively.
+type DerivedConsentRequest struct {
+	// Sub is the authenticated user the device secret was minted for.
+	Sub string `json:"sub"`
+	// ClientID is the application presenting the device secret (the child app).
+	ClientID string `json:"client_id"`
+	// OriginClientID is the application the device secret was minted for (the super app).
+	OriginClientID string `json:"origin_client_id"`
+	// RequestedScopes are the scopes the child app asked for on the exchange.
+	RequestedScopes []string `json:"requested_scopes"`
+	// GrantedScopes are the scopes carried on the device secret, i.e. what the super app was granted.
+	GrantedScopes []string `json:"granted_scopes"`
+	// AuthID identifies the authentication the device secret descends from.
+	AuthID string `json:"auth_id"`
+	// SessionID is the sid shared by the ID token and the device secret.
+	SessionID string `json:"sid"`
+}
+
+// DerivedConsentResult is the outcome of resolving derived consent for a token exchange.
+type DerivedConsentResult struct {
+	// Allowed is true when the originating consent covers everything the child app requested.
+	Allowed bool `json:"allowed"`
+	// MissingScopes lists requested scopes the originating consent does not cover.
+	MissingScopes []string `json:"missing_scopes,omitempty"`
+	// MissingClaims lists claims the child app needs that the user never released to the super app.
+	MissingClaims []string `json:"missing_claims,omitempty"`
 }

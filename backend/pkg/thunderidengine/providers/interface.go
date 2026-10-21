@@ -316,3 +316,14 @@ type DeviceSecretProvider interface {
 	// ValidateDeviceSecret validates a presented device secret and returns its claims.
 	ValidateDeviceSecret(ctx context.Context, clientID string, deviceSecret string) (*DeviceSecretClaims, *common.ServiceError)
 }
+
+// DeviceSSOConsentProvider is an optional extension a DeviceSecretProvider may implement to decide
+// whether the consent the user gave the originating application also covers a Native SSO token
+// exchange by a sibling application. When the provider does not implement it, the token exchange
+// only enforces that the requested scopes are a subset of those granted to the originating app.
+type DeviceSSOConsentProvider interface {
+	// ResolveDerivedConsent reports whether the originating consent covers the exchange. A result
+	// that is not allowed makes the token endpoint answer interaction_required so the child app can
+	// run an interactive authorization and capture fresh consent.
+	ResolveDerivedConsent(ctx context.Context, req *DerivedConsentRequest) (*DerivedConsentResult, *common.ServiceError)
+}

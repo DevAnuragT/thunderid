@@ -22,6 +22,7 @@ import (
 	oauth2utils "github.com/thunder-id/thunderid/internal/oauth/oauth2/utils"
 	"github.com/thunder-id/thunderid/internal/system/jose/jwt"
 	"github.com/thunder-id/thunderid/internal/system/log"
+	tidcommon "github.com/thunder-id/thunderid/pkg/thunderidengine/common"
 	"github.com/thunder-id/thunderid/pkg/thunderidengine/providers"
 )
 
@@ -104,6 +105,15 @@ func (h *tokenExchangeGrantHandler) ValidateGrant(ctx context.Context, tokenRequ
 			return &model.ErrorResponse{
 				Error:            constants.ErrorInvalidRequest,
 				ErrorDescription: "Unsupported actor_token_type",
+			}
+		}
+		// Native SSO: the device secret always accompanies the ID token it was minted with.
+		if tokenRequest.ActorTokenType == string(constants.TokenTypeIdentifierDeviceSecret) &&
+			tokenRequest.SubjectTokenType != string(constants.TokenTypeIdentifierIDToken) {
+			return &model.ErrorResponse{
+				Error: constants.ErrorInvalidRequest,
+				ErrorDescription: "A device secret actor_token must be presented with a subject_token of type " +
+					string(constants.TokenTypeIdentifierIDToken),
 			}
 		}
 	}
@@ -214,60 +224,18 @@ func (h *tokenExchangeGrantHandler) HandleGrant(ctx context.Context, tokenReques
 
 	// Validate and extract actor token claims if present
 	var actorClaims *tokenservice.SubjectTokenClaims
+	var deviceSecretClaims *providers.DeviceSecretClaims
 	if tokenRequest.ActorToken != "" {
 		if tokenRequest.ActorTokenType == string(constants.TokenTypeIdentifierDeviceSecret) {
-			if h.deviceSecretProvider == nil {
-				return nil, &model.ErrorResponse{
-					Error:            constants.ErrorServerError,
-					ErrorDescription: "Device secret provider is not configured",
-				}
+			var dsErr *model.ErrorResponse
+			deviceSecretClaims, dsErr = h.validateDeviceSecretActor(ctx, tokenRequest, oauthApp, subjectClaims)
+			if dsErr != nil {
+				return nil, dsErr
 			}
-
-			// Validate actor_token by calling Device Secret Provider's ValidateDeviceSecret
-			dsClaims, svcErr := h.deviceSecretProvider.ValidateDeviceSecret(ctx, tokenRequest.ClientID, tokenRequest.ActorToken)
-			if svcErr != nil {
-				desc := svcErr.ErrorDescription.String()
-				if desc == "" {
-					desc = svcErr.Error.String()
-				}
-				logger.Debug(ctx, "Failed to validate device secret", log.Error(errors.New(desc)))
-				return nil, &model.ErrorResponse{
-					Error:            constants.ErrorInvalidGrant,
-					ErrorDescription: desc,
-				}
-			}
-
-			// Confirm binding between id_token and device secret via ds_hash
-			hasher := sha256.New()
-			hasher.Write([]byte(tokenRequest.ActorToken))
-			expectedDSHash := base64.RawURLEncoding.EncodeToString(hasher.Sum(nil))
-			if subjectClaims.DSHash != "" && subjectClaims.DSHash != expectedDSHash {
-				return nil, &model.ErrorResponse{
-					Error:            constants.ErrorInvalidGrant,
-					ErrorDescription: "ds_hash in subject_token does not match actor_token",
-				}
-			}
-
-			// Confirm cnf.jkt in device secret matches current request's DPoP header
-			currentDPoPJkt := dpop.GetJkt(ctx)
-			if dsClaims.CnfJKT != "" && currentDPoPJkt != "" && dsClaims.CnfJKT != currentDPoPJkt {
-				return nil, &model.ErrorResponse{
-					Error:            constants.ErrorInvalidGrant,
-					ErrorDescription: "DPoP key thumbprint does not match cnf.jkt in device secret",
-				}
-			}
-
-			// Confirm subject matches
-			if dsClaims.Sub != "" && subjectClaims.Sub != "" && dsClaims.Sub != subjectClaims.Sub {
-				return nil, &model.ErrorResponse{
-					Error:            constants.ErrorInvalidGrant,
-					ErrorDescription: "Subject in device secret does not match subject_token",
-				}
-			}
-
+			// The originating application is the actor on whose behalf the child app acts.
 			actorClaims = &tokenservice.SubjectTokenClaims{
-				Sub:    dsClaims.ClientID,
-				CnfJkt: dsClaims.CnfJKT,
+				Sub:    deviceSecretClaims.ClientID,
+				CnfJkt: deviceSecretClaims.CnfJKT,
 			}
 		} else {
 			actorClaims, err = h.tokenValidator.ValidateSubjectToken(ctx, tokenRequest.ActorToken, oauthApp)
@@ -320,10 +288,24 @@ func (h *tokenExchangeGrantHandler) HandleGrant(ctx context.Context, tokenReques
 		actorClaims = &tokenservice.SubjectTokenClaims{Sub: oauthApp.ID}
 	}
 
-	// Determine final scopes
-	finalScopes, errResp := h.getScopes(tokenRequest, subjectClaims.Scopes)
+	// Determine final scopes. On a Native SSO exchange the device secret records what the
+	// originating app was granted, and the child app may not exceed it.
+	grantedScopes := subjectClaims.Scopes
+	if deviceSecretClaims != nil && deviceSecretClaims.Scope != "" {
+		grantedScopes = tokenservice.ParseScopes(deviceSecretClaims.Scope)
+	}
+	finalScopes, errResp := h.getScopes(tokenRequest, grantedScopes)
 	if errResp != nil {
 		return nil, errResp
+	}
+
+	// Native SSO never captures consent in the child app: the exchange succeeds only when the
+	// consent the user gave the originating app covers what the child app asked for.
+	if deviceSecretClaims != nil {
+		if errResp := h.resolveDerivedConsent(ctx, tokenRequest, subjectClaims, deviceSecretClaims,
+			grantedScopes, finalScopes); errResp != nil {
+			return nil, errResp
+		}
 	}
 
 	// Retain OIDC scopes (governed by the app's scope-to-claims mapping); only permission scopes
@@ -404,6 +386,160 @@ func (h *tokenExchangeGrantHandler) HandleGrant(ctx context.Context, tokenReques
 // token-exchange request with requested_token_type=urn:ietf:params:oauth:token-type:id-jag. The
 // subject_token must be a self-issued token, and the audience parameter must match one of the
 // application's configured allowed audiences. DPoP binding is out of scope for ID-JAGs.
+// validateDeviceSecretActor validates a Native SSO device secret presented as the actor_token and
+// its binding to the presented ID token: the client must be enabled for device_sso, the ID token
+// must carry ds_hash = BASE64URL(SHA-256(device_secret)) and the same sid as the device secret,
+// the device secret's cnf.jkt must match the DPoP proof key, and both tokens must name one subject.
+func (h *tokenExchangeGrantHandler) validateDeviceSecretActor(ctx context.Context,
+	tokenRequest *model.TokenRequest, oauthApp *providers.OAuthClient,
+	subjectClaims *tokenservice.SubjectTokenClaims) (*providers.DeviceSecretClaims, *model.ErrorResponse) {
+	logger := log.GetLogger().With(log.String(log.LoggerKeyComponentName, "TokenExchangeGrantHandler"))
+
+	if h.deviceSecretProvider == nil {
+		return nil, &model.ErrorResponse{
+			Error:            constants.ErrorServerError,
+			ErrorDescription: "Device secret provider is not configured",
+		}
+	}
+	// A client redeems a device secret only when it is itself registered for Native SSO.
+	if !slices.Contains(oauthApp.Scopes, constants.ScopeDeviceSSO) {
+		return nil, &model.ErrorResponse{
+			Error:            constants.ErrorUnauthorizedClient,
+			ErrorDescription: "The device_sso scope is not enabled for this client",
+		}
+	}
+
+	dsClaims, svcErr := h.deviceSecretProvider.ValidateDeviceSecret(ctx, tokenRequest.ClientID, tokenRequest.ActorToken)
+	if svcErr != nil {
+		desc := svcErr.ErrorDescription.String()
+		if desc == "" {
+			desc = svcErr.Error.String()
+		}
+		logger.Debug(ctx, "Failed to validate device secret", log.Error(errors.New(desc)))
+		if svcErr.Type == tidcommon.ServerErrorType {
+			return nil, &model.ErrorResponse{
+				Error:            constants.ErrorServerError,
+				ErrorDescription: "Failed to validate device secret",
+			}
+		}
+		return nil, &model.ErrorResponse{
+			Error:            constants.ErrorInvalidGrant,
+			ErrorDescription: desc,
+		}
+	}
+	if dsClaims == nil {
+		return nil, &model.ErrorResponse{
+			Error:            constants.ErrorServerError,
+			ErrorDescription: "Failed to validate device secret",
+		}
+	}
+
+	// ds_hash binds the ID token to exactly this device secret.
+	if subjectClaims.DSHash == "" {
+		return nil, &model.ErrorResponse{
+			Error:            constants.ErrorInvalidGrant,
+			ErrorDescription: "subject_token does not carry a ds_hash binding to a device secret",
+		}
+	}
+	if subjectClaims.DSHash != deviceSecretHash(tokenRequest.ActorToken) {
+		return nil, &model.ErrorResponse{
+			Error:            constants.ErrorInvalidGrant,
+			ErrorDescription: "ds_hash in subject_token does not match actor_token",
+		}
+	}
+
+	// Both tokens descend from the same authentication session.
+	if subjectClaims.SID == "" || dsClaims.SessionID == "" || subjectClaims.SID != dsClaims.SessionID {
+		return nil, &model.ErrorResponse{
+			Error:            constants.ErrorInvalidGrant,
+			ErrorDescription: "sid in subject_token does not match the device secret",
+		}
+	}
+
+	// The child app must prove possession of the key the device secret was bound to: the DPoP proof
+	// on this request is signed by the originating app's key, whose thumbprint is cnf.jkt.
+	if dsClaims.CnfJKT != "" {
+		currentDPoPJkt := dpop.GetJkt(ctx)
+		if currentDPoPJkt == "" {
+			return nil, &model.ErrorResponse{
+				Error:            constants.ErrorInvalidDPoPProof,
+				ErrorDescription: "A DPoP proof signed by the key bound to the device secret is required",
+			}
+		}
+		if dsClaims.CnfJKT != currentDPoPJkt {
+			return nil, &model.ErrorResponse{
+				Error:            constants.ErrorInvalidGrant,
+				ErrorDescription: "DPoP key thumbprint does not match cnf.jkt in device secret",
+			}
+		}
+	}
+
+	if dsClaims.Sub == "" || subjectClaims.Sub == "" || dsClaims.Sub != subjectClaims.Sub {
+		return nil, &model.ErrorResponse{
+			Error:            constants.ErrorInvalidGrant,
+			ErrorDescription: "Subject in device secret does not match subject_token",
+		}
+	}
+
+	return dsClaims, nil
+}
+
+// resolveDerivedConsent asks the DeviceSecretProvider, when it implements
+// DeviceSSOConsentProvider, whether the consent captured by the originating app covers the child
+// app's exchange. A refusal is answered with interaction_required so the child app can fall back
+// to an interactive authorization and capture consent of its own.
+func (h *tokenExchangeGrantHandler) resolveDerivedConsent(ctx context.Context,
+	tokenRequest *model.TokenRequest, subjectClaims *tokenservice.SubjectTokenClaims,
+	dsClaims *providers.DeviceSecretClaims, grantedScopes, requestedScopes []string) *model.ErrorResponse {
+	consentProvider, ok := h.deviceSecretProvider.(providers.DeviceSSOConsentProvider)
+	if !ok {
+		return nil
+	}
+	logger := log.GetLogger().With(log.String(log.LoggerKeyComponentName, "TokenExchangeGrantHandler"))
+
+	result, svcErr := consentProvider.ResolveDerivedConsent(ctx, &providers.DerivedConsentRequest{
+		Sub:             subjectClaims.Sub,
+		ClientID:        tokenRequest.ClientID,
+		OriginClientID:  dsClaims.ClientID,
+		RequestedScopes: requestedScopes,
+		GrantedScopes:   grantedScopes,
+		AuthID:          dsClaims.AuthID,
+		SessionID:       dsClaims.SessionID,
+	})
+	if svcErr != nil {
+		desc := svcErr.ErrorDescription.String()
+		if desc == "" {
+			desc = svcErr.Error.String()
+		}
+		logger.Error(ctx, "Failed to resolve derived consent", log.Error(errors.New(desc)))
+		return &model.ErrorResponse{
+			Error:            constants.ErrorServerError,
+			ErrorDescription: "Failed to resolve consent for the token exchange",
+		}
+	}
+	if result == nil || result.Allowed {
+		return nil
+	}
+
+	desc := "The consent granted to the originating application does not cover this request"
+	if len(result.MissingScopes) > 0 {
+		desc += "; scopes not consented: " + strings.Join(result.MissingScopes, " ")
+	}
+	if len(result.MissingClaims) > 0 {
+		desc += "; claims not consented: " + strings.Join(result.MissingClaims, " ")
+	}
+	return &model.ErrorResponse{
+		Error:            constants.ErrorInteractionRequired,
+		ErrorDescription: desc,
+	}
+}
+
+// deviceSecretHash computes ds_hash = BASE64URL(SHA-256(device_secret)).
+func deviceSecretHash(deviceSecret string) string {
+	sum := sha256.Sum256([]byte(deviceSecret))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
 func (h *tokenExchangeGrantHandler) handleIDJAGGrant(ctx context.Context, tokenRequest *model.TokenRequest,
 	oauthApp *providers.OAuthClient) (*model.TokenResponseDTO, *model.ErrorResponse) {
 	logger := log.GetLogger().With(log.String(log.LoggerKeyComponentName, "TokenExchangeGrantHandler"))

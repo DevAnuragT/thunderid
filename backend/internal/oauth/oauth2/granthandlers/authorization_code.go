@@ -23,6 +23,10 @@ import (
 	"github.com/thunder-id/thunderid/pkg/thunderidengine/providers"
 )
 
+// defaultDeviceSecretValidity bounds how long a Native SSO device secret may be exchanged. The
+// DeviceSecretProvider may shorten it; the value only sets the expiry the engine asks for.
+const defaultDeviceSecretValidity = 30 * 24 * time.Hour
+
 // authorizationCodeGrantHandler handles the authorization code grant type.
 type authorizationCodeGrantHandler struct {
 	authzService         authz.AuthorizeServiceInterface
@@ -203,9 +207,32 @@ func (h *authorizationCodeGrantHandler) HandleGrant(ctx context.Context, tokenRe
 		CorrelationID: authCode.CorrelationID,
 	}
 
+	// Native SSO (OpenID Connect Native SSO for Mobile Apps 1.0): a grant that carries the
+	// device_sso scope also mints a device secret bound to the ID token through ds_hash and sid.
 	var dsHash string
-	// Check if 'device_sso' scope was requested and deviceSecretProvider is available
-	if slices.Contains(accessTokenScopes, constants.ScopeDeviceSSO) && h.deviceSecretProvider != nil {
+	// This engine build has no SSO session store, so the authorization id serves as the sid.
+	sessionID := ""
+	if slices.Contains(accessTokenScopes, constants.ScopeDeviceSSO) {
+		if h.deviceSecretProvider == nil {
+			return nil, &model.ErrorResponse{
+				Error:            constants.ErrorInvalidScope,
+				ErrorDescription: "The device_sso scope is not supported by this deployment",
+			}
+		}
+		// The token endpoint re-checks that the registered client is enabled for Native SSO, so a
+		// client cannot obtain a device secret merely by asking for the scope at authorization.
+		if !slices.Contains(oauthApp.Scopes, constants.ScopeDeviceSSO) {
+			return nil, &model.ErrorResponse{
+				Error:            constants.ErrorInvalidScope,
+				ErrorDescription: "The device_sso scope is not enabled for this client",
+			}
+		}
+		// The device secret and the ID token share a session id. Deployments without an SSO session
+		// store (such as an embedded engine) have no sid of their own, so the authorization id
+		// identifies the authentication instead.
+		if sessionID == "" {
+			sessionID = authCode.CodeID
+		}
 		dsRes, dsErr := h.deviceSecretProvider.GenerateDeviceSecret(ctx, &providers.DeviceSecretParams{
 			Sub:            authCode.AuthorizedUserID,
 			AuthID:         authCode.CodeID,
@@ -214,7 +241,8 @@ func (h *authorizationCodeGrantHandler) HandleGrant(ctx context.Context, tokenRe
 			ACR:            authCode.CompletedACR,
 			Claims:         attrs,
 			CnfJKT:         dpop.GetJkt(ctx),
-			ExpiryDuration: 30 * 24 * time.Hour,
+			ExpiryDuration: defaultDeviceSecretValidity,
+			SessionID:      sessionID,
 		})
 		if dsErr != nil {
 			logger.Error(ctx, "Failed to generate device secret", log.Error(errors.New(dsErr.ErrorDescription.String())))
@@ -223,10 +251,15 @@ func (h *authorizationCodeGrantHandler) HandleGrant(ctx context.Context, tokenRe
 				ErrorDescription: "Failed to generate device secret",
 			}
 		}
-		if dsRes != nil {
-			tokenResponse.DeviceSecret = dsRes.DeviceSecret
-			dsHash = dsRes.DSHash
+		if dsRes == nil || dsRes.DeviceSecret == "" || dsRes.DSHash == "" {
+			logger.Error(ctx, "Device secret provider returned an empty device secret")
+			return nil, &model.ErrorResponse{
+				Error:            constants.ErrorServerError,
+				ErrorDescription: "Failed to generate device secret",
+			}
 		}
+		tokenResponse.DeviceSecret = dsRes.DeviceSecret
+		dsHash = dsRes.DSHash
 	}
 
 	// Generate ID token if 'openid' scope is present
@@ -241,6 +274,7 @@ func (h *authorizationCodeGrantHandler) HandleGrant(ctx context.Context, tokenRe
 			ClaimsRequest:  authCode.ClaimsRequest,
 			Nonce:          authCode.Nonce,
 			CompletedACR:   authCode.CompletedACR,
+			SessionID:      sessionID,
 			DSHash:         dsHash,
 		})
 		if err != nil {

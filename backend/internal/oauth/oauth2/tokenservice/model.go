@@ -118,6 +118,8 @@ type IDTokenBuildContext struct {
 	Nonce          string
 	CompletedACR   string
 	DSHash         string
+	// SessionID, when set, is emitted as the `sid` claim.
+	SessionID string
 }
 
 // RefreshTokenClaims represents the validated claims from a refresh token.

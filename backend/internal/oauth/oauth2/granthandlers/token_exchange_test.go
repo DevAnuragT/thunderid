@@ -5,7 +5,6 @@ package granthandlers
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -3705,247 +3704,328 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_OIDCOnly_NoReso
 	assert.NotNil(suite.T(), result)
 }
 
-func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_DeviceSSO_ScopeRejected() {
-	tokenRequest := &model.TokenRequest{
+// ---- Native SSO (device secret) token exchange ----
+
+const (
+	testDeviceSecret    = "device-secret-payload" //nolint:gosec // test fixture, not a credential
+	testDeviceSecretSID = "sid-native-sso-1"
+	testSuperClientID   = "super-app-client"
+)
+
+// deviceSSOApp returns a copy of the suite client registered for Native SSO.
+func (suite *TokenExchangeGrantHandlerTestSuite) deviceSSOApp() *providers.OAuthClient {
+	app := *suite.oauthApp
+	app.Scopes = []string{"openid", "profile", "email", constants.ScopeDeviceSSO}
+	return &app
+}
+
+// deviceSecretClaims returns the claims a valid device secret minted for the super app carries.
+func deviceSecretClaims() *providers.DeviceSecretClaims {
+	return &providers.DeviceSecretClaims{
+		Sub:       testUserID,
+		AuthID:    "auth-1",
+		ClientID:  testSuperClientID,
+		Scope:     "openid profile " + constants.ScopeDeviceSSO,
+		CnfJKT:    "thumbprint-tx",
+		SessionID: testDeviceSecretSID,
+	}
+}
+
+// validDeviceSecretProvider accepts testDeviceSecret for any client and returns deviceSecretClaims.
+func validDeviceSecretProvider() *mockDeviceSecretProvider {
+	return &mockDeviceSecretProvider{
+		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
+			if deviceSecret != testDeviceSecret {
+				return nil, &tidcommon.ServiceError{Type: tidcommon.ClientErrorType,
+					ErrorDescription: tidcommon.I18nMessage{DefaultValue: "Invalid device secret signature"}}
+			}
+			return deviceSecretClaims(), nil
+		},
+	}
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) newDeviceSecretHandler(ds providers.DeviceSecretProvider) *tokenExchangeGrantHandler {
+	return &tokenExchangeGrantHandler{
+		tokenBuilder:         suite.mockTokenBuilder,
+		tokenValidator:       suite.mockTokenValidator,
+		resourceService:      suite.mockResourceService,
+		deviceSecretProvider: ds,
+	}
+}
+
+func deviceSecretExchangeRequest(scope string) *model.TokenRequest {
+	return &model.TokenRequest{
 		GrantType:        string(providers.GrantTypeTokenExchange),
 		ClientID:         testClientID,
 		SubjectToken:     "some-id-token",
 		SubjectTokenType: string(constants.TokenTypeIdentifierIDToken),
-		Scope:            "openid " + constants.ScopeDeviceSSO,
+		ActorToken:       testDeviceSecret,
+		ActorTokenType:   string(constants.TokenTypeIdentifierDeviceSecret),
+		Scope:            scope,
 	}
-	err := suite.handler.ValidateGrant(context.Background(), tokenRequest, suite.oauthApp)
-	assert.NotNil(suite.T(), err)
-	assert.Equal(suite.T(), constants.ErrorInvalidScope, err.Error)
-	assert.Contains(suite.T(), err.ErrorDescription, "device_sso scope is valid only on the token endpoint with authorization_code grant")
+}
+
+// idTokenClaims returns the subject token claims of an ID token minted alongside testDeviceSecret.
+func idTokenClaims() *tokenservice.SubjectTokenClaims {
+	return &tokenservice.SubjectTokenClaims{
+		Sub:    testUserID,
+		Scopes: []string{"openid", "profile", constants.ScopeDeviceSSO},
+		DSHash: deviceSecretHash(testDeviceSecret),
+		SID:    testDeviceSecretSID,
+	}
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) stubSubjectToken(app *providers.OAuthClient, claims *tokenservice.SubjectTokenClaims) {
+	suite.mockTokenValidator.On("ValidateSubjectToken", mock.Anything, "some-id-token", app).
+		Return(claims, nil).Once()
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_DeviceSSO_ScopeRejected() {
+	tokenRequest := deviceSecretExchangeRequest("openid " + constants.ScopeDeviceSSO)
+
+	errResp := suite.handler.ValidateGrant(context.Background(), tokenRequest, suite.deviceSSOApp())
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInvalidScope, errResp.Error)
+	suite.Contains(errResp.ErrorDescription, "device_sso scope is valid only")
 }
 
 func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_DeviceSecret_ActorTokenType_Valid() {
-	tokenRequest := &model.TokenRequest{
-		GrantType:        string(providers.GrantTypeTokenExchange),
-		ClientID:         testClientID,
-		SubjectToken:     "some-id-token",
-		SubjectTokenType: string(constants.TokenTypeIdentifierIDToken),
-		ActorToken:       "device-secret-payload",
-		ActorTokenType:   string(constants.TokenTypeIdentifierDeviceSecret),
-	}
-	err := suite.handler.ValidateGrant(context.Background(), tokenRequest, suite.oauthApp)
-	assert.Nil(suite.T(), err)
+	errResp := suite.handler.ValidateGrant(context.Background(), deviceSecretExchangeRequest("profile"), suite.deviceSSOApp())
+	suite.Nil(errResp)
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_DeviceSecret_RequiresIDTokenSubject() {
+	tokenRequest := deviceSecretExchangeRequest("profile")
+	tokenRequest.SubjectTokenType = string(constants.TokenTypeIdentifierAccessToken)
+
+	errResp := suite.handler.ValidateGrant(context.Background(), tokenRequest, suite.deviceSSOApp())
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInvalidRequest, errResp.Error)
+	suite.Contains(errResp.ErrorDescription, "subject_token of type")
 }
 
 func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_ProviderNil_Fails() {
-	handler := &tokenExchangeGrantHandler{
-		tokenBuilder:    suite.mockTokenBuilder,
-		tokenValidator:  suite.mockTokenValidator,
-		resourceService: suite.mockResourceService,
+	handler := suite.newDeviceSecretHandler(nil)
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
+
+	result, errResp := handler.HandleGrant(context.Background(), deviceSecretExchangeRequest(""), app)
+	suite.Nil(result)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorServerError, errResp.Error)
+	suite.Contains(errResp.ErrorDescription, "Device secret provider is not configured")
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_ClientNotEnabled() {
+	called := false
+	ds := validDeviceSecretProvider()
+	validate := ds.validateFunc
+	ds.validateFunc = func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
+		called = true
+		return validate(ctx, clientID, deviceSecret)
 	}
+	handler := suite.newDeviceSecretHandler(ds)
+	// suite.oauthApp is not registered for device_sso.
+	suite.stubSubjectToken(suite.oauthApp, idTokenClaims())
 
-	tokenRequest := &model.TokenRequest{
-		GrantType:        string(providers.GrantTypeTokenExchange),
-		ClientID:         testClientID,
-		SubjectToken:     "some-id-token",
-		SubjectTokenType: string(constants.TokenTypeIdentifierIDToken),
-		ActorToken:       "device-secret-payload",
-		ActorTokenType:   string(constants.TokenTypeIdentifierDeviceSecret),
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest("profile"), suite.oauthApp)
+	suite.Nil(result)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorUnauthorizedClient, errResp.Error)
+	suite.False(called, "the device secret is not validated for a client that is not enabled")
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_InvalidSecret() {
+	handler := suite.newDeviceSecretHandler(validDeviceSecretProvider())
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
+	tokenRequest := deviceSecretExchangeRequest("profile")
+	tokenRequest.ActorToken = "tampered"
+
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, tokenRequest, app)
+	suite.Nil(result)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInvalidGrant, errResp.Error)
+	suite.Equal("Invalid device secret signature", errResp.ErrorDescription)
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_ProviderServerError() {
+	ds := &mockDeviceSecretProvider{
+		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
+			return nil, &tidcommon.ServiceError{Type: tidcommon.ServerErrorType,
+				ErrorDescription: tidcommon.I18nMessage{DefaultValue: "key store unreachable"}}
+		},
 	}
+	handler := suite.newDeviceSecretHandler(ds)
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
 
-	suite.mockTokenValidator.On("ValidateSubjectToken", mock.Anything, "some-id-token", suite.oauthApp).
-		Return(&tokenservice.SubjectTokenClaims{Sub: testUserID, Scopes: []string{"openid"}}, nil).Once()
-
-	result, errResp := handler.HandleGrant(context.Background(), tokenRequest, suite.oauthApp)
-	assert.Nil(suite.T(), result)
-	assert.NotNil(suite.T(), errResp)
-	assert.Equal(suite.T(), constants.ErrorServerError, errResp.Error)
-	assert.Contains(suite.T(), errResp.ErrorDescription, "Device secret provider is not configured")
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest("profile"), app)
+	suite.Nil(result)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorServerError, errResp.Error)
+	suite.NotContains(errResp.ErrorDescription, "key store", "server-side details are not leaked")
 }
 
 func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_DSHashMismatch() {
-	mockDS := &mockDeviceSecretProvider{
-		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
-			return &providers.DeviceSecretClaims{
-				Sub:      testUserID,
-				ClientID: testClientID,
-				CnfJKT:   "thumbprint-tx",
-			}, nil
-		},
+	handler := suite.newDeviceSecretHandler(validDeviceSecretProvider())
+	app := suite.deviceSSOApp()
+	claims := idTokenClaims()
+	claims.DSHash = "wrong-ds-hash"
+	suite.stubSubjectToken(app, claims)
+
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest(""), app)
+	suite.Nil(result)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInvalidGrant, errResp.Error)
+	suite.Contains(errResp.ErrorDescription, "ds_hash in subject_token does not match actor_token")
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_DSHashMissing() {
+	handler := suite.newDeviceSecretHandler(validDeviceSecretProvider())
+	app := suite.deviceSSOApp()
+	claims := idTokenClaims()
+	claims.DSHash = ""
+	suite.stubSubjectToken(app, claims)
+
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest(""), app)
+	suite.Nil(result)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInvalidGrant, errResp.Error)
+	suite.Contains(errResp.ErrorDescription, "does not carry a ds_hash")
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_SIDMismatch() {
+	testCases := []struct {
+		name       string
+		idTokenSID string
+		deviceSID  string
+	}{
+		{"Different", "sid-a", "sid-b"},
+		{"MissingOnIDToken", "", testDeviceSecretSID},
+		{"MissingOnDeviceSecret", testDeviceSecretSID, ""},
 	}
+	for _, tc := range testCases {
+		suite.Run(tc.name, func() {
+			suite.SetupTest()
+			ds := &mockDeviceSecretProvider{
+				validateFunc: func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
+					c := deviceSecretClaims()
+					c.SessionID = tc.deviceSID
+					return c, nil
+				},
+			}
+			handler := suite.newDeviceSecretHandler(ds)
+			app := suite.deviceSSOApp()
+			claims := idTokenClaims()
+			claims.SID = tc.idTokenSID
+			suite.stubSubjectToken(app, claims)
 
-	handler := &tokenExchangeGrantHandler{
-		tokenBuilder:         suite.mockTokenBuilder,
-		tokenValidator:       suite.mockTokenValidator,
-		resourceService:      suite.mockResourceService,
-		deviceSecretProvider: mockDS,
+			ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+			result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest("profile"), app)
+			suite.Nil(result)
+			suite.Require().NotNil(errResp)
+			suite.Equal(constants.ErrorInvalidGrant, errResp.Error)
+			suite.Contains(errResp.ErrorDescription, "sid in subject_token does not match")
+		})
 	}
-
-	tokenRequest := &model.TokenRequest{
-		GrantType:        string(providers.GrantTypeTokenExchange),
-		ClientID:         testClientID,
-		SubjectToken:     "some-id-token",
-		SubjectTokenType: string(constants.TokenTypeIdentifierIDToken),
-		ActorToken:       "device-secret-payload",
-		ActorTokenType:   string(constants.TokenTypeIdentifierDeviceSecret),
-	}
-
-	// ds_hash in id_token doesn't match sha256 of "device-secret-payload"
-	suite.mockTokenValidator.On("ValidateSubjectToken", mock.Anything, "some-id-token", suite.oauthApp).
-		Return(&tokenservice.SubjectTokenClaims{
-			Sub:    testUserID,
-			Scopes: []string{"openid"},
-			DSHash: "wrong-ds-hash",
-		}, nil).Once()
-
-	result, errResp := handler.HandleGrant(context.Background(), tokenRequest, suite.oauthApp)
-	assert.Nil(suite.T(), result)
-	assert.NotNil(suite.T(), errResp)
-	assert.Equal(suite.T(), constants.ErrorInvalidGrant, errResp.Error)
-	assert.Contains(suite.T(), errResp.ErrorDescription, "ds_hash in subject_token does not match actor_token")
 }
 
 func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_DPoPThumbprintMismatch() {
-	rawSecret := "device-secret-payload"
-	hasher := sha256.New()
-	hasher.Write([]byte(rawSecret))
-	correctDSHash := base64.RawURLEncoding.EncodeToString(hasher.Sum(nil))
+	handler := suite.newDeviceSecretHandler(validDeviceSecretProvider())
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
 
-	mockDS := &mockDeviceSecretProvider{
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-different")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest(""), app)
+	suite.Nil(result)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInvalidGrant, errResp.Error)
+	suite.Contains(errResp.ErrorDescription, "DPoP key thumbprint does not match cnf.jkt in device secret")
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_DPoPProofMissing() {
+	handler := suite.newDeviceSecretHandler(validDeviceSecretProvider())
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
+
+	result, errResp := handler.HandleGrant(context.Background(), deviceSecretExchangeRequest(""), app)
+	suite.Nil(result)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInvalidDPoPProof, errResp.Error)
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_SubjectMismatch() {
+	ds := &mockDeviceSecretProvider{
 		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
-			return &providers.DeviceSecretClaims{
-				Sub:      testUserID,
-				ClientID: testClientID,
-				CnfJKT:   "thumbprint-expected",
-			}, nil
+			c := deviceSecretClaims()
+			c.Sub = "someone-else"
+			return c, nil
 		},
 	}
+	handler := suite.newDeviceSecretHandler(ds)
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
 
-	handler := &tokenExchangeGrantHandler{
-		tokenBuilder:         suite.mockTokenBuilder,
-		tokenValidator:       suite.mockTokenValidator,
-		resourceService:      suite.mockResourceService,
-		deviceSecretProvider: mockDS,
-	}
-
-	tokenRequest := &model.TokenRequest{
-		GrantType:        string(providers.GrantTypeTokenExchange),
-		ClientID:         testClientID,
-		SubjectToken:     "some-id-token",
-		SubjectTokenType: string(constants.TokenTypeIdentifierIDToken),
-		ActorToken:       rawSecret,
-		ActorTokenType:   string(constants.TokenTypeIdentifierDeviceSecret),
-	}
-
-	suite.mockTokenValidator.On("ValidateSubjectToken", mock.Anything, "some-id-token", suite.oauthApp).
-		Return(&tokenservice.SubjectTokenClaims{
-			Sub:    testUserID,
-			Scopes: []string{"openid"},
-			DSHash: correctDSHash,
-		}, nil).Once()
-
-	// Provide different thumbprint in DPoP context
-	ctx := dpop.WithJkt(context.Background(), "thumbprint-different")
-	result, errResp := handler.HandleGrant(ctx, tokenRequest, suite.oauthApp)
-
-	assert.Nil(suite.T(), result)
-	assert.NotNil(suite.T(), errResp)
-	assert.Equal(suite.T(), constants.ErrorInvalidGrant, errResp.Error)
-	assert.Contains(suite.T(), errResp.ErrorDescription, "DPoP key thumbprint does not match cnf.jkt in device secret")
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest(""), app)
+	suite.Nil(result)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInvalidGrant, errResp.Error)
+	suite.Contains(errResp.ErrorDescription, "Subject in device secret does not match")
 }
 
 func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_ScopeEscalationRejected() {
-	rawSecret := "device-secret-payload"
-	hasher := sha256.New()
-	hasher.Write([]byte(rawSecret))
-	correctDSHash := base64.RawURLEncoding.EncodeToString(hasher.Sum(nil))
+	handler := suite.newDeviceSecretHandler(validDeviceSecretProvider())
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
 
-	mockDS := &mockDeviceSecretProvider{
-		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
-			return &providers.DeviceSecretClaims{
-				Sub:      testUserID,
-				ClientID: testClientID,
-				CnfJKT:   "thumbprint-tx",
-			}, nil
-		},
-	}
+	// "payment" was never granted to the super app.
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest("openid payment"), app)
+	suite.Nil(result)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInvalidScope, errResp.Error)
+	suite.Contains(errResp.ErrorDescription, "exceeds scopes originally granted in subject token")
+}
 
-	handler := &tokenExchangeGrantHandler{
-		tokenBuilder:         suite.mockTokenBuilder,
-		tokenValidator:       suite.mockTokenValidator,
-		resourceService:      suite.mockResourceService,
-		deviceSecretProvider: mockDS,
-	}
-
-	tokenRequest := &model.TokenRequest{
-		GrantType:        string(providers.GrantTypeTokenExchange),
-		ClientID:         testClientID,
-		SubjectToken:     "some-id-token",
-		SubjectTokenType: string(constants.TokenTypeIdentifierIDToken),
-		ActorToken:       rawSecret,
-		ActorTokenType:   string(constants.TokenTypeIdentifierDeviceSecret),
-		Scope:            "openid payment", // "payment" was not in subject token scopes!
-	}
-
-	suite.mockTokenValidator.On("ValidateSubjectToken", mock.Anything, "some-id-token", suite.oauthApp).
-		Return(&tokenservice.SubjectTokenClaims{
-			Sub:    testUserID,
-			Scopes: []string{"openid", "profile"},
-			DSHash: correctDSHash,
-		}, nil).Once()
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_ScopeAuthorityIsDeviceSecret() {
+	// The ID token's scope claim is narrower than the device secret's; the device secret records the
+	// grant, so a scope it carries is exchangeable.
+	handler := suite.newDeviceSecretHandler(validDeviceSecretProvider())
+	app := suite.deviceSSOApp()
+	claims := idTokenClaims()
+	claims.Scopes = []string{"openid"}
+	suite.stubSubjectToken(app, claims)
+	suite.mockTokenBuilder.On("BuildAccessToken", mock.Anything,
+		mock.MatchedBy(func(ctx *tokenservice.AccessTokenBuildContext) bool {
+			return tokenservice.JoinScopes(ctx.Scopes) == "profile"
+		})).Return(&model.TokenDTO{Token: "child-app-access-token", Scopes: []string{"profile"}}, nil).Once()
 
 	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
-	result, errResp := handler.HandleGrant(ctx, tokenRequest, suite.oauthApp)
-
-	assert.Nil(suite.T(), result)
-	assert.NotNil(suite.T(), errResp)
-	assert.Equal(suite.T(), constants.ErrorInvalidScope, errResp.Error)
-	assert.Contains(suite.T(), errResp.ErrorDescription, "exceeds scopes originally granted in subject token")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest("profile"), app)
+	suite.Require().Nil(errResp)
+	suite.Equal([]string{"profile"}, result.AccessToken.Scopes)
 }
 
 func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_Success() {
-	rawSecret := "device-secret-payload"
-	hasher := sha256.New()
-	hasher.Write([]byte(rawSecret))
-	correctDSHash := base64.RawURLEncoding.EncodeToString(hasher.Sum(nil))
-
-	mockDS := &mockDeviceSecretProvider{
-		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
-			assert.Equal(suite.T(), testClientID, clientID)
-			assert.Equal(suite.T(), rawSecret, deviceSecret)
-			return &providers.DeviceSecretClaims{
-				Sub:      testUserID,
-				ClientID: testClientID,
-				CnfJKT:   "thumbprint-tx",
-			}, nil
-		},
-	}
-
-	handler := &tokenExchangeGrantHandler{
-		tokenBuilder:         suite.mockTokenBuilder,
-		tokenValidator:       suite.mockTokenValidator,
-		resourceService:      suite.mockResourceService,
-		deviceSecretProvider: mockDS,
-	}
-
-	tokenRequest := &model.TokenRequest{
-		GrantType:        string(providers.GrantTypeTokenExchange),
-		ClientID:         testClientID,
-		SubjectToken:     "some-id-token",
-		SubjectTokenType: string(constants.TokenTypeIdentifierIDToken),
-		ActorToken:       rawSecret,
-		ActorTokenType:   string(constants.TokenTypeIdentifierDeviceSecret),
-		Scope:            "profile", // Valid subset of "openid profile"
-	}
-
-	suite.mockTokenValidator.On("ValidateSubjectToken", mock.Anything, "some-id-token", suite.oauthApp).
-		Return(&tokenservice.SubjectTokenClaims{
-			Sub:    testUserID,
-			Scopes: []string{"openid", "profile"},
-			DSHash: correctDSHash,
-		}, nil).Once()
+	handler := suite.newDeviceSecretHandler(validDeviceSecretProvider())
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
 
 	now := time.Now().Unix()
 	suite.mockTokenBuilder.On("BuildAccessToken", mock.Anything,
 		mock.MatchedBy(func(ctx *tokenservice.AccessTokenBuildContext) bool {
 			return ctx.Subject == testUserID &&
 				ctx.ClientID == testClientID &&
-				tokenservice.JoinScopes(ctx.Scopes) == "profile"
+				tokenservice.JoinScopes(ctx.Scopes) == "profile" &&
+				ctx.ActorClaims != nil && ctx.ActorClaims.Sub == testSuperClientID &&
+				ctx.DPoPJkt == "thumbprint-tx"
 		})).Return(&model.TokenDTO{
 		Token:     "child-app-access-token",
 		TokenType: constants.TokenTypeBearer,
@@ -3957,11 +4037,81 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_Su
 	}, nil).Once()
 
 	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
-	result, errResp := handler.HandleGrant(ctx, tokenRequest, suite.oauthApp)
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest("profile"), app)
 
-	assert.Nil(suite.T(), errResp)
-	assert.NotNil(suite.T(), result)
-	assert.Equal(suite.T(), "child-app-access-token", result.AccessToken.Token)
-	assert.Equal(suite.T(), []string{"profile"}, result.AccessToken.Scopes)
+	suite.Require().Nil(errResp)
+	suite.Require().NotNil(result)
+	suite.Equal("child-app-access-token", result.AccessToken.Token)
+	suite.Equal([]string{"profile"}, result.AccessToken.Scopes)
 }
 
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_DerivedConsentAllowed() {
+	var seen *providers.DerivedConsentRequest
+	ds := &mockDeviceSSOConsentProvider{
+		mockDeviceSecretProvider: *validDeviceSecretProvider(),
+		resolveFunc: func(ctx context.Context, req *providers.DerivedConsentRequest) (*providers.DerivedConsentResult, *tidcommon.ServiceError) {
+			seen = req
+			return &providers.DerivedConsentResult{Allowed: true}, nil
+		},
+	}
+	handler := suite.newDeviceSecretHandler(ds)
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
+	suite.mockTokenBuilder.On("BuildAccessToken", mock.Anything, mock.Anything).
+		Return(&model.TokenDTO{Token: "child-app-access-token", Scopes: []string{"profile"}}, nil).Once()
+
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest("profile"), app)
+
+	suite.Require().Nil(errResp)
+	suite.NotNil(result)
+	suite.Require().NotNil(seen)
+	suite.Equal(testUserID, seen.Sub)
+	suite.Equal(testClientID, seen.ClientID)
+	suite.Equal(testSuperClientID, seen.OriginClientID)
+	suite.Equal([]string{"profile"}, seen.RequestedScopes)
+	suite.Equal([]string{"openid", "profile", constants.ScopeDeviceSSO}, seen.GrantedScopes)
+	suite.Equal("auth-1", seen.AuthID)
+	suite.Equal(testDeviceSecretSID, seen.SessionID)
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_DerivedConsentRequiresInteraction() {
+	ds := &mockDeviceSSOConsentProvider{
+		mockDeviceSecretProvider: *validDeviceSecretProvider(),
+		resolveFunc: func(ctx context.Context, req *providers.DerivedConsentRequest) (*providers.DerivedConsentResult, *tidcommon.ServiceError) {
+			return &providers.DerivedConsentResult{Allowed: false, MissingClaims: []string{"email"}}, nil
+		},
+	}
+	handler := suite.newDeviceSecretHandler(ds)
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
+
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest("profile"), app)
+
+	suite.Nil(result)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInteractionRequired, errResp.Error)
+	suite.Contains(errResp.ErrorDescription, "claims not consented: email")
+	suite.mockTokenBuilder.AssertNotCalled(suite.T(), "BuildAccessToken", mock.Anything, mock.Anything)
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_DerivedConsentProviderError() {
+	ds := &mockDeviceSSOConsentProvider{
+		mockDeviceSecretProvider: *validDeviceSecretProvider(),
+		resolveFunc: func(ctx context.Context, req *providers.DerivedConsentRequest) (*providers.DerivedConsentResult, *tidcommon.ServiceError) {
+			return nil, &tidcommon.ServiceError{Type: tidcommon.ServerErrorType,
+				ErrorDescription: tidcommon.I18nMessage{DefaultValue: "consent store down"}}
+		},
+	}
+	handler := suite.newDeviceSecretHandler(ds)
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
+
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest("profile"), app)
+
+	suite.Nil(result)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorServerError, errResp.Error)
+}
