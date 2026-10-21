@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 
+	"github.com/thunder-id/thunderid/internal/attributecache"
 	oauthconfig "github.com/thunder-id/thunderid/internal/oauth/config"
 	"github.com/thunder-id/thunderid/internal/oauth/oauth2/constants"
 	"github.com/thunder-id/thunderid/internal/oauth/oauth2/dpop"
@@ -28,6 +29,7 @@ import (
 	"github.com/thunder-id/thunderid/internal/oauth/oauth2/revocation"
 	"github.com/thunder-id/thunderid/internal/oauth/oauth2/tokenservice"
 	"github.com/thunder-id/thunderid/internal/system/config"
+	"github.com/thunder-id/thunderid/tests/mocks/attributecachemock"
 	"github.com/thunder-id/thunderid/tests/mocks/jose/jwtmock"
 	"github.com/thunder-id/thunderid/tests/mocks/oauth/oauth2/tokenservicemock"
 	"github.com/thunder-id/thunderid/tests/mocks/resourcemock"
@@ -230,7 +232,7 @@ func (suite *TokenExchangeGrantHandlerTestSuite) setupSuccessfulJWTMockWithScope
 // TestNewTokenExchangeGrantHandler tests the constructor
 func (suite *TokenExchangeGrantHandlerTestSuite) TestNewTokenExchangeGrantHandler() {
 	handler := newTokenExchangeGrantHandler(suite.mockTokenBuilder, suite.mockTokenValidator,
-		suite.mockResourceService, nil, oauthconfig.Config{})
+		suite.mockResourceService, nil, nil, oauthconfig.Config{})
 	assert.NotNil(suite.T(), handler)
 	assert.Implements(suite.T(), (*GrantHandlerInterface)(nil), handler)
 }
@@ -4114,4 +4116,34 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_De
 	suite.Nil(result)
 	suite.Require().NotNil(errResp)
 	suite.Equal(constants.ErrorServerError, errResp.Error)
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_CachesConsentedAttributes() {
+	ds := &mockDeviceSecretProvider{
+		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
+			c := deviceSecretClaims()
+			c.Claims = map[string]interface{}{"name": "Alice", "email": "alice@example.com", "picture": "data:..."}
+			return c, nil
+		},
+	}
+	attrCache := attributecachemock.NewAttributeCacheServiceInterfaceMock(suite.T())
+	handler := suite.newDeviceSecretHandler(ds)
+	handler.attributeCache = attrCache
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
+
+	// Only claims the final scopes release are cached: profile -> name/picture, not email.
+	attrCache.On("CreateAttributeCache", mock.Anything, mock.MatchedBy(func(c *attributecache.AttributeCache) bool {
+		_, hasEmail := c.Attributes["email"]
+		return c.Attributes["name"] == "Alice" && c.Attributes["picture"] == "data:..." && !hasEmail && c.TTLSeconds > 0
+	})).Return(&attributecache.AttributeCache{ID: "cache-child-1"}, nil).Once()
+	suite.mockTokenBuilder.On("BuildAccessToken", mock.Anything,
+		mock.MatchedBy(func(ctx *tokenservice.AccessTokenBuildContext) bool {
+			return ctx.AttributeCacheID == "cache-child-1"
+		})).Return(&model.TokenDTO{Token: "child-app-access-token", Scopes: []string{"profile"}}, nil).Once()
+
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest("profile"), app)
+	suite.Require().Nil(errResp)
+	suite.Equal("child-app-access-token", result.AccessToken.Token)
 }

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/thunder-id/thunderid/internal/attributecache"
 	oauthconfig "github.com/thunder-id/thunderid/internal/oauth/config"
 	"github.com/thunder-id/thunderid/internal/oauth/oauth2/constants"
 	"github.com/thunder-id/thunderid/internal/oauth/oauth2/dpop"
@@ -31,6 +32,7 @@ type tokenExchangeGrantHandler struct {
 	tokenBuilder         tokenservice.TokenBuilderInterface
 	tokenValidator       tokenservice.TokenValidatorInterface
 	resourceService      providers.ResourceServerProvider
+	attributeCache       attributecache.AttributeCacheServiceInterface
 	deviceSecretProvider providers.DeviceSecretProvider
 	cfg                  oauthconfig.Config
 }
@@ -40,6 +42,7 @@ func newTokenExchangeGrantHandler(
 	tokenBuilder tokenservice.TokenBuilderInterface,
 	tokenValidator tokenservice.TokenValidatorInterface,
 	resourceService providers.ResourceServerProvider,
+	attributeCache attributecache.AttributeCacheServiceInterface,
 	deviceSecretProvider providers.DeviceSecretProvider,
 	cfg oauthconfig.Config,
 ) GrantHandlerInterface {
@@ -47,6 +50,7 @@ func newTokenExchangeGrantHandler(
 		tokenBuilder:         tokenBuilder,
 		tokenValidator:       tokenValidator,
 		resourceService:      resourceService,
+		attributeCache:       attributeCache,
 		deviceSecretProvider: deviceSecretProvider,
 		cfg:                  cfg,
 	}
@@ -356,12 +360,23 @@ func (h *tokenExchangeGrantHandler) HandleGrant(ctx context.Context, tokenReques
 
 	// Build access token using token builder
 	userSubConfig := oauthApp.UserAccessTokenConfig()
+	// A Native SSO exchange carries the user's attributes in the device secret rather than in an
+	// attribute cache the subject token points at; materialise them so userinfo can serve the child.
+	var attributeCacheID string
+	if deviceSecretClaims != nil {
+		attributeCacheID, errResp = h.cacheDeviceSecretAttributes(ctx, oauthApp, deviceSecretClaims, finalScopes)
+		if errResp != nil {
+			return nil, errResp
+		}
+	}
+
 	accessToken, err := h.tokenBuilder.BuildAccessToken(ctx, &tokenservice.AccessTokenBuildContext{
 		Subject:           subjectClaims.Sub,
 		Audiences:         finalAudiences,
 		ClientID:          tokenRequest.ClientID,
 		Scopes:            finalScopes,
 		SubjectAttributes: tokenservice.FilterAttributesByAllowList(subjectClaims.UserAttributes, userSubConfig),
+		AttributeCacheID:  attributeCacheID,
 		GrantType:         string(providers.GrantTypeTokenExchange),
 		OAuthApp:          oauthApp,
 		ActorClaims:       actorClaims,
@@ -532,6 +547,50 @@ func (h *tokenExchangeGrantHandler) resolveDerivedConsent(ctx context.Context,
 		Error:            constants.ErrorInteractionRequired,
 		ErrorDescription: desc,
 	}
+}
+
+// cacheDeviceSecretAttributes stores the claim snapshot the device secret carries as an attribute
+// cache entry for the exchanged access token, keeping only the claims the final scopes release to
+// the child app. The entry lives as long as the access token (plus the usual buffer).
+func (h *tokenExchangeGrantHandler) cacheDeviceSecretAttributes(ctx context.Context,
+	oauthApp *providers.OAuthClient, dsClaims *providers.DeviceSecretClaims, scopes []string) (string, *model.ErrorResponse) {
+	logger := log.GetLogger().With(log.String(log.LoggerKeyComponentName, "TokenExchangeGrantHandler"))
+	if h.attributeCache == nil || len(dsClaims.Claims) == 0 {
+		logger.Debug(ctx, "No attributes to cache for the exchanged token",
+			log.Bool("cacheConfigured", h.attributeCache != nil), log.Int("claimCount", len(dsClaims.Claims)))
+		return "", nil
+	}
+	allowed := make(map[string]bool)
+	for _, scope := range scopes {
+		for _, claim := range oauth2utils.ResolveScopeClaims(scope, oauthApp.ScopeClaims) {
+			allowed[claim] = true
+		}
+	}
+	attrs := make(map[string]interface{}, len(allowed))
+	for name, value := range dsClaims.Claims {
+		if allowed[name] {
+			attrs[name] = value
+		}
+	}
+	if len(attrs) == 0 {
+		logger.Debug(ctx, "None of the device secret claims are released by the exchanged scopes",
+			log.Int("claimCount", len(dsClaims.Claims)), log.Int("scopeCount", len(scopes)))
+		return "", nil
+	}
+	ttl := tokenservice.ResolveTokenConfig(h.cfg, oauthApp, tokenservice.TokenTypeAccess,
+		oauthApp.UserAccessTokenConfig().ValidityPeriodOrZero()).ValidityPeriod + constants.AttributeCacheTTLBufferSeconds
+	entry, svcErr := h.attributeCache.CreateAttributeCache(ctx, &attributecache.AttributeCache{
+		Attributes: attrs,
+		TTLSeconds: ttl,
+	})
+	if svcErr != nil {
+		logger.Error(ctx, "Failed to cache device secret attributes", log.Error(errors.New(svcErr.ErrorDescription.DefaultValue)))
+		return "", &model.ErrorResponse{
+			Error:            constants.ErrorServerError,
+			ErrorDescription: "Failed to prepare user attributes for the exchanged token",
+		}
+	}
+	return entry.ID, nil
 }
 
 // deviceSecretHash computes ds_hash = BASE64URL(SHA-256(device_secret)).
