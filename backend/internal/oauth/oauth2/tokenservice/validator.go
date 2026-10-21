@@ -578,6 +578,9 @@ func (tv *tokenValidator) extractSubjectTokenClaims(
 		tokenFamilyID, _ = extractStringClaim(claims, constants.ClaimTokenFamilyID)
 	}
 
+	dsHash, _ := extractStringClaim(claims, "ds_hash")
+	sid, _ := extractStringClaim(claims, "sid")
+
 	return &SubjectTokenClaims{
 		Sub:            sub,
 		Iss:            iss,
@@ -588,6 +591,8 @@ func (tv *tokenValidator) extractSubjectTokenClaims(
 		CnfJkt:         cnfJkt,
 		JTI:            jti,
 		TokenFamilyID:  tokenFamilyID,
+		DSHash:         dsHash,
+		SID:            sid,
 	}, nil
 }
 

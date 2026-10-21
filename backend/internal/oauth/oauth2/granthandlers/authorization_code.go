@@ -5,6 +5,7 @@ package granthandlers
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"time"
@@ -24,10 +25,11 @@ import (
 
 // authorizationCodeGrantHandler handles the authorization code grant type.
 type authorizationCodeGrantHandler struct {
-	authzService    authz.AuthorizeServiceInterface
-	tokenBuilder    tokenservice.TokenBuilderInterface
-	attributeCache  attributecache.AttributeCacheServiceInterface
-	resourceService providers.ResourceServerProvider
+	authzService         authz.AuthorizeServiceInterface
+	tokenBuilder         tokenservice.TokenBuilderInterface
+	attributeCache       attributecache.AttributeCacheServiceInterface
+	resourceService      providers.ResourceServerProvider
+	deviceSecretProvider providers.DeviceSecretProvider
 }
 
 // newAuthorizationCodeGrantHandler creates a new instance of AuthorizationCodeGrantHandler.
@@ -36,12 +38,14 @@ func newAuthorizationCodeGrantHandler(
 	tokenBuilder tokenservice.TokenBuilderInterface,
 	attributeCache attributecache.AttributeCacheServiceInterface,
 	resourceService providers.ResourceServerProvider,
+	deviceSecretProvider providers.DeviceSecretProvider,
 ) GrantHandlerInterface {
 	return &authorizationCodeGrantHandler{
-		authzService:    authzService,
-		tokenBuilder:    tokenBuilder,
-		attributeCache:  attributeCache,
-		resourceService: resourceService,
+		authzService:         authzService,
+		tokenBuilder:         tokenBuilder,
+		attributeCache:       attributeCache,
+		resourceService:      resourceService,
+		deviceSecretProvider: deviceSecretProvider,
 	}
 }
 
@@ -199,6 +203,32 @@ func (h *authorizationCodeGrantHandler) HandleGrant(ctx context.Context, tokenRe
 		CorrelationID: authCode.CorrelationID,
 	}
 
+	var dsHash string
+	// Check if 'device_sso' scope was requested and deviceSecretProvider is available
+	if slices.Contains(accessTokenScopes, constants.ScopeDeviceSSO) && h.deviceSecretProvider != nil {
+		dsRes, dsErr := h.deviceSecretProvider.GenerateDeviceSecret(ctx, &providers.DeviceSecretParams{
+			Sub:            authCode.AuthorizedUserID,
+			AuthID:         authCode.CodeID,
+			ClientID:       tokenRequest.ClientID,
+			Scope:          strings.Join(accessTokenScopes, " "),
+			ACR:            authCode.CompletedACR,
+			Claims:         attrs,
+			CnfJKT:         dpop.GetJkt(ctx),
+			ExpiryDuration: 30 * 24 * time.Hour,
+		})
+		if dsErr != nil {
+			logger.Error(ctx, "Failed to generate device secret", log.Error(errors.New(dsErr.ErrorDescription.String())))
+			return nil, &model.ErrorResponse{
+				Error:            constants.ErrorServerError,
+				ErrorDescription: "Failed to generate device secret",
+			}
+		}
+		if dsRes != nil {
+			tokenResponse.DeviceSecret = dsRes.DeviceSecret
+			dsHash = dsRes.DSHash
+		}
+	}
+
 	// Generate ID token if 'openid' scope is present
 	if slices.Contains(accessTokenScopes, constants.ScopeOpenID) {
 		idToken, err := h.tokenBuilder.BuildIDToken(ctx, &tokenservice.IDTokenBuildContext{
@@ -211,6 +241,7 @@ func (h *authorizationCodeGrantHandler) HandleGrant(ctx context.Context, tokenRe
 			ClaimsRequest:  authCode.ClaimsRequest,
 			Nonce:          authCode.Nonce,
 			CompletedACR:   authCode.CompletedACR,
+			DSHash:         dsHash,
 		})
 		if err != nil {
 			logger.Error(ctx, "Failed to generate ID token", log.Error(err))

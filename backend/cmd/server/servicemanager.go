@@ -503,7 +503,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 		flowExecService, observabilitySvc, runtimeCryptoSvc, ouService, attributeCacheService, authZService,
 		resourceServerProvider, i18nService, idpService, dpopVerifier,
 		runtimeStoreProvider, transactioner, revocationEnforcer, revocationSvc,
-		sessionService, flowMgtService, oauthCfg)
+		sessionService, flowMgtService, nil, oauthCfg)
 	fatalOnError(ctx, logger, err, "Failed to initialize OAuth services")
 
 	// Initialized after the OAuth services because credential issuance validates the presented

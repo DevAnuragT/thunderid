@@ -178,7 +178,7 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) stubDefaultResourceServer()
 
 func (suite *AuthorizationCodeGrantHandlerTestSuite) TestNewAuthorizationCodeGrantHandler() {
 	handler := newAuthorizationCodeGrantHandler(
-		suite.mockAuthzService, suite.mockTokenBuilder, suite.mockAttrCacheService, suite.mockResourceService)
+		suite.mockAuthzService, suite.mockTokenBuilder, suite.mockAttrCacheService, suite.mockResourceService, nil)
 	assert.NotNil(suite.T(), handler)
 	assert.Implements(suite.T(), (*GrantHandlerInterface)(nil), handler)
 }
@@ -1690,3 +1690,141 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestResolveAuthTime_Prefers
 	suite.Equal(authenticated.Unix(), got,
 		"auth_time must report the authentication, not when the code was minted")
 }
+
+type mockDeviceSecretProvider struct {
+	generateFunc func(ctx context.Context, params *providers.DeviceSecretParams) (*providers.DeviceSecretResult, *tidcommon.ServiceError)
+	validateFunc func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError)
+}
+
+func (m *mockDeviceSecretProvider) GenerateDeviceSecret(ctx context.Context, params *providers.DeviceSecretParams) (*providers.DeviceSecretResult, *tidcommon.ServiceError) {
+	if m.generateFunc != nil {
+		return m.generateFunc(ctx, params)
+	}
+	return nil, nil
+}
+
+func (m *mockDeviceSecretProvider) ValidateDeviceSecret(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
+	if m.validateFunc != nil {
+		return m.validateFunc(ctx, clientID, deviceSecret)
+	}
+	return nil, nil
+}
+
+func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_Success() {
+	suite.mockAuthzService = authzmock.NewAuthorizeServiceInterfaceMock(suite.T())
+	suite.mockTokenBuilder = tokenservicemock.NewTokenBuilderInterfaceMock(suite.T())
+	suite.mockAttrCacheService = attributecachemock.NewAttributeCacheServiceInterfaceMock(suite.T())
+	suite.mockResourceService = resourcemock.NewResourceServiceInterfaceMock(suite.T())
+	suite.stubDefaultResourceServer()
+
+	mockDS := &mockDeviceSecretProvider{
+		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (*providers.DeviceSecretResult, *tidcommon.ServiceError) {
+			assert.Equal(suite.T(), testUserID, params.Sub)
+			assert.Equal(suite.T(), testClientID, params.ClientID)
+			assert.Contains(suite.T(), params.Scope, constants.ScopeDeviceSSO)
+			return &providers.DeviceSecretResult{
+				DeviceSecret: "mock-device-secret-jwt",
+				DSHash:       "mock-ds-hash-123",
+			}, nil
+		},
+	}
+
+	suite.handler = &authorizationCodeGrantHandler{
+		tokenBuilder:         suite.mockTokenBuilder,
+		authzService:         suite.mockAuthzService,
+		attributeCache:       suite.mockAttrCacheService,
+		resourceService:      suite.mockResourceService,
+		deviceSecretProvider: mockDS,
+	}
+
+	authCodeWithSSO := suite.testAuthzCode
+	authCodeWithSSO.Scopes = "openid profile " + constants.ScopeDeviceSSO
+
+	suite.mockAuthzService.On("GetAuthorizationCodeDetails", mock.Anything, testClientID, "test-auth-code").
+		Return(&authCodeWithSSO, nil)
+
+	suite.mockTokenBuilder.On("BuildAccessToken", mock.Anything, mock.Anything).Return(&model.TokenDTO{
+		Token:     "test-access-token",
+		TokenType: constants.TokenTypeBearer,
+		IssuedAt:  time.Now().Unix(),
+		ExpiresIn: 3600,
+		Scopes:    []string{"openid", "profile", constants.ScopeDeviceSSO},
+		ClientID:  testClientID,
+		Subject:   testUserID,
+	}, nil)
+
+	suite.mockTokenBuilder.On("BuildIDToken", mock.Anything,
+		mock.MatchedBy(func(ctx *tokenservice.IDTokenBuildContext) bool {
+			return ctx.DSHash == "mock-ds-hash-123"
+		})).Return(&model.TokenDTO{
+		Token:     "test-id-token",
+		TokenType: constants.TokenTypeBearer,
+		IssuedAt:  time.Now().Unix(),
+		ExpiresIn: 3600,
+		ClientID:  testClientID,
+		Subject:   testUserID,
+	}, nil)
+
+	tokenReq := *suite.testTokenReq
+	result, err := suite.handler.HandleGrant(context.Background(), &tokenReq, suite.oauthApp)
+
+	assert.Nil(suite.T(), err)
+	assert.NotNil(suite.T(), result)
+	assert.Equal(suite.T(), "mock-device-secret-jwt", result.DeviceSecret)
+	assert.Equal(suite.T(), "test-id-token", result.IDToken.Token)
+}
+
+func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_ProviderError() {
+	suite.mockAuthzService = authzmock.NewAuthorizeServiceInterfaceMock(suite.T())
+	suite.mockTokenBuilder = tokenservicemock.NewTokenBuilderInterfaceMock(suite.T())
+	suite.mockAttrCacheService = attributecachemock.NewAttributeCacheServiceInterfaceMock(suite.T())
+	suite.mockResourceService = resourcemock.NewResourceServiceInterfaceMock(suite.T())
+	suite.stubDefaultResourceServer()
+
+	mockDS := &mockDeviceSecretProvider{
+		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (*providers.DeviceSecretResult, *tidcommon.ServiceError) {
+			return nil, &tidcommon.ServiceError{
+				Code: "ERR_DS_GEN",
+				Error: tidcommon.I18nMessage{
+					DefaultValue: "signing error",
+				},
+				ErrorDescription: tidcommon.I18nMessage{
+					DefaultValue: "failed to sign device secret",
+				},
+			}
+		},
+	}
+
+	suite.handler = &authorizationCodeGrantHandler{
+		tokenBuilder:         suite.mockTokenBuilder,
+		authzService:         suite.mockAuthzService,
+		attributeCache:       suite.mockAttrCacheService,
+		resourceService:      suite.mockResourceService,
+		deviceSecretProvider: mockDS,
+	}
+
+	authCodeWithSSO := suite.testAuthzCode
+	authCodeWithSSO.Scopes = "openid " + constants.ScopeDeviceSSO
+
+	suite.mockAuthzService.On("GetAuthorizationCodeDetails", mock.Anything, testClientID, "test-auth-code").
+		Return(&authCodeWithSSO, nil)
+
+	suite.mockTokenBuilder.On("BuildAccessToken", mock.Anything, mock.Anything).Return(&model.TokenDTO{
+		Token:     "test-access-token",
+		TokenType: constants.TokenTypeBearer,
+		IssuedAt:  time.Now().Unix(),
+		ExpiresIn: 3600,
+		Scopes:    []string{"openid", constants.ScopeDeviceSSO},
+		ClientID:  testClientID,
+		Subject:   testUserID,
+	}, nil)
+
+	tokenReq := *suite.testTokenReq
+	result, err := suite.handler.HandleGrant(context.Background(), &tokenReq, suite.oauthApp)
+
+	assert.Nil(suite.T(), result)
+	assert.NotNil(suite.T(), err)
+	assert.Equal(suite.T(), constants.ErrorServerError, err.Error)
+	assert.Equal(suite.T(), "Failed to generate device secret", err.ErrorDescription)
+}
+

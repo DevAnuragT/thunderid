@@ -5,7 +5,10 @@ package granthandlers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -24,10 +27,11 @@ import (
 
 // tokenExchangeGrantHandler handles the token exchange grant type.
 type tokenExchangeGrantHandler struct {
-	tokenBuilder    tokenservice.TokenBuilderInterface
-	tokenValidator  tokenservice.TokenValidatorInterface
-	resourceService providers.ResourceServerProvider
-	cfg             oauthconfig.Config
+	tokenBuilder         tokenservice.TokenBuilderInterface
+	tokenValidator       tokenservice.TokenValidatorInterface
+	resourceService      providers.ResourceServerProvider
+	deviceSecretProvider providers.DeviceSecretProvider
+	cfg                  oauthconfig.Config
 }
 
 // newTokenExchangeGrantHandler creates a new instance of tokenExchangeGrantHandler.
@@ -35,13 +39,15 @@ func newTokenExchangeGrantHandler(
 	tokenBuilder tokenservice.TokenBuilderInterface,
 	tokenValidator tokenservice.TokenValidatorInterface,
 	resourceService providers.ResourceServerProvider,
+	deviceSecretProvider providers.DeviceSecretProvider,
 	cfg oauthconfig.Config,
 ) GrantHandlerInterface {
 	return &tokenExchangeGrantHandler{
-		tokenBuilder:    tokenBuilder,
-		tokenValidator:  tokenValidator,
-		resourceService: resourceService,
-		cfg:             cfg,
+		tokenBuilder:         tokenBuilder,
+		tokenValidator:       tokenValidator,
+		resourceService:      resourceService,
+		deviceSecretProvider: deviceSecretProvider,
+		cfg:                  cfg,
 	}
 }
 
@@ -133,6 +139,14 @@ func (h *tokenExchangeGrantHandler) ValidateGrant(ctx context.Context, tokenRequ
 		}
 	}
 
+	// Reject any token endpoint call with token_exchange grant that includes device_sso scope (Task 10.b)
+	if tokenRequest.Scope != "" && slices.Contains(tokenservice.ParseScopes(tokenRequest.Scope), constants.ScopeDeviceSSO) {
+		return &model.ErrorResponse{
+			Error:            constants.ErrorInvalidScope,
+			ErrorDescription: "device_sso scope is valid only on the token endpoint with authorization_code grant",
+		}
+	}
+
 	return nil
 }
 
@@ -201,44 +215,100 @@ func (h *tokenExchangeGrantHandler) HandleGrant(ctx context.Context, tokenReques
 	// Validate and extract actor token claims if present
 	var actorClaims *tokenservice.SubjectTokenClaims
 	if tokenRequest.ActorToken != "" {
-		actorClaims, err = h.tokenValidator.ValidateSubjectToken(ctx, tokenRequest.ActorToken, oauthApp)
-		if err != nil {
-			logger.Debug(ctx, "Failed to validate actor token", log.Error(err))
-			// Attribute the actor_token rejection the same way as the subject_token above.
-			switch {
-			case errors.Is(err, revocation.ErrEnforcementUnavailable):
+		if tokenRequest.ActorTokenType == string(constants.TokenTypeIdentifierDeviceSecret) {
+			if h.deviceSecretProvider == nil {
 				return nil, &model.ErrorResponse{
 					Error:            constants.ErrorServerError,
-					ErrorDescription: "Token revocation status could not be verified",
-				}
-			case errors.Is(err, tokenservice.ErrTokenExpired):
-				return nil, &model.ErrorResponse{
-					Error:            constants.ErrorInvalidRequest,
-					ErrorDescription: "The actor_token has expired",
-				}
-			case errors.Is(err, tokenservice.ErrIssuerNotTrusted):
-				return nil, &model.ErrorResponse{
-					Error:            constants.ErrorInvalidRequest,
-					ErrorDescription: "The actor_token issuer is not registered as a trusted token exchange issuer",
-				}
-			case errors.Is(err, tokenservice.ErrAudienceNotAccepted):
-				return nil, &model.ErrorResponse{
-					Error: constants.ErrorInvalidRequest,
-					ErrorDescription: "The actor_token audience does not contain this server's issuer or the " +
-						"trusted token audience configured for its issuer",
-				}
-			default:
-				return nil, &model.ErrorResponse{
-					Error:            constants.ErrorInvalidRequest,
-					ErrorDescription: "Invalid actor_token",
+					ErrorDescription: "Device secret provider is not configured",
 				}
 			}
-		}
 
-		// Apply the same RFC 9068 access-token typ enforcement to the actor_token.
-		if errResp := h.validateAccessTokenType(tokenRequest.ActorToken,
-			tokenRequest.ActorTokenType, "actor_token"); errResp != nil {
-			return nil, errResp
+			// Validate actor_token by calling Device Secret Provider's ValidateDeviceSecret
+			dsClaims, svcErr := h.deviceSecretProvider.ValidateDeviceSecret(ctx, tokenRequest.ClientID, tokenRequest.ActorToken)
+			if svcErr != nil {
+				desc := svcErr.ErrorDescription.String()
+				if desc == "" {
+					desc = svcErr.Error.String()
+				}
+				logger.Debug(ctx, "Failed to validate device secret", log.Error(errors.New(desc)))
+				return nil, &model.ErrorResponse{
+					Error:            constants.ErrorInvalidGrant,
+					ErrorDescription: desc,
+				}
+			}
+
+			// Confirm binding between id_token and device secret via ds_hash
+			hasher := sha256.New()
+			hasher.Write([]byte(tokenRequest.ActorToken))
+			expectedDSHash := base64.RawURLEncoding.EncodeToString(hasher.Sum(nil))
+			if subjectClaims.DSHash != "" && subjectClaims.DSHash != expectedDSHash {
+				return nil, &model.ErrorResponse{
+					Error:            constants.ErrorInvalidGrant,
+					ErrorDescription: "ds_hash in subject_token does not match actor_token",
+				}
+			}
+
+			// Confirm cnf.jkt in device secret matches current request's DPoP header
+			currentDPoPJkt := dpop.GetJkt(ctx)
+			if dsClaims.CnfJKT != "" && currentDPoPJkt != "" && dsClaims.CnfJKT != currentDPoPJkt {
+				return nil, &model.ErrorResponse{
+					Error:            constants.ErrorInvalidGrant,
+					ErrorDescription: "DPoP key thumbprint does not match cnf.jkt in device secret",
+				}
+			}
+
+			// Confirm subject matches
+			if dsClaims.Sub != "" && subjectClaims.Sub != "" && dsClaims.Sub != subjectClaims.Sub {
+				return nil, &model.ErrorResponse{
+					Error:            constants.ErrorInvalidGrant,
+					ErrorDescription: "Subject in device secret does not match subject_token",
+				}
+			}
+
+			actorClaims = &tokenservice.SubjectTokenClaims{
+				Sub:    dsClaims.ClientID,
+				CnfJkt: dsClaims.CnfJKT,
+			}
+		} else {
+			actorClaims, err = h.tokenValidator.ValidateSubjectToken(ctx, tokenRequest.ActorToken, oauthApp)
+			if err != nil {
+				logger.Debug(ctx, "Failed to validate actor token", log.Error(err))
+				// Attribute the actor_token rejection the same way as the subject_token above.
+				switch {
+				case errors.Is(err, revocation.ErrEnforcementUnavailable):
+					return nil, &model.ErrorResponse{
+						Error:            constants.ErrorServerError,
+						ErrorDescription: "Token revocation status could not be verified",
+					}
+				case errors.Is(err, tokenservice.ErrTokenExpired):
+					return nil, &model.ErrorResponse{
+						Error:            constants.ErrorInvalidRequest,
+						ErrorDescription: "The actor_token has expired",
+					}
+				case errors.Is(err, tokenservice.ErrIssuerNotTrusted):
+					return nil, &model.ErrorResponse{
+						Error:            constants.ErrorInvalidRequest,
+						ErrorDescription: "The actor_token issuer is not registered as a trusted token exchange issuer",
+					}
+				case errors.Is(err, tokenservice.ErrAudienceNotAccepted):
+					return nil, &model.ErrorResponse{
+						Error: constants.ErrorInvalidRequest,
+						ErrorDescription: "The actor_token audience does not contain this server's issuer or the " +
+							"trusted token audience configured for its issuer",
+					}
+				default:
+					return nil, &model.ErrorResponse{
+						Error:            constants.ErrorInvalidRequest,
+						ErrorDescription: "Invalid actor_token",
+					}
+				}
+			}
+
+			// Apply the same RFC 9068 access-token typ enforcement to the actor_token.
+			if errResp := h.validateAccessTokenType(tokenRequest.ActorToken,
+				tokenRequest.ActorTokenType, "actor_token"); errResp != nil {
+				return nil, errResp
+			}
 		}
 	}
 
@@ -497,9 +567,17 @@ func (h *tokenExchangeGrantHandler) getScopes(
 
 	validRequestedScopes := []string{}
 	for _, requestedScope := range requestedScopes {
-		if subjectScopeSet[requestedScope] {
-			validRequestedScopes = append(validRequestedScopes, requestedScope)
+		if !subjectScopeSet[requestedScope] {
+			// Task 10.a: Enforce that the scope requested by the second App is a subset of the scope originally granted
+			if tokenRequest.ActorTokenType == string(constants.TokenTypeIdentifierDeviceSecret) {
+				return nil, &model.ErrorResponse{
+					Error:            constants.ErrorInvalidScope,
+					ErrorDescription: fmt.Sprintf("Requested scope '%s' exceeds scopes originally granted in subject token", requestedScope),
+				}
+			}
+			continue
 		}
+		validRequestedScopes = append(validRequestedScopes, requestedScope)
 	}
 
 	return validRequestedScopes, nil

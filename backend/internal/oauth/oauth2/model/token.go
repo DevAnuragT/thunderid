@@ -36,6 +36,7 @@ type TokenResponse struct {
 	Scope           string `json:"scope,omitempty"`
 	IDToken         string `json:"id_token,omitempty"`
 	IssuedTokenType string `json:"issued_token_type,omitempty"`
+	DeviceSecret    string `json:"device_secret,omitempty"`
 }
 
 // TokenDTO represents the data transfer object for tokens.
@@ -81,6 +82,7 @@ type TokenResponseDTO struct {
 	AccessToken  TokenDTO
 	RefreshToken TokenDTO
 	IDToken      TokenDTO
+	DeviceSecret string
 	// CorrelationID is the correlation identifier of the authorization grant these tokens were issued
 	// against, when the grant carries one (the login flow's execution id, arriving via the
 	// authorization code). Reported on the token issuance event so it stitches to the flow's own

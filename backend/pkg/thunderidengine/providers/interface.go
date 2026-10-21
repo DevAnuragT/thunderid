@@ -306,3 +306,13 @@ type RuntimeCryptoProvider interface {
 	// GetSupportedEncryptionAlgorithms returns the list of algorithms supported by Encrypt and Decrypt.
 	GetSupportedEncryptionAlgorithms() []string
 }
+
+// DeviceSecretProvider defines the interface for generating and validating device secrets
+// for OpenID Connect Native SSO for Mobile Apps.
+type DeviceSecretProvider interface {
+	// GenerateDeviceSecret generates a signed device secret JWT and computes ds_hash.
+	GenerateDeviceSecret(ctx context.Context, params *DeviceSecretParams) (*DeviceSecretResult, *common.ServiceError)
+
+	// ValidateDeviceSecret validates a presented device secret and returns its claims.
+	ValidateDeviceSecret(ctx context.Context, clientID string, deviceSecret string) (*DeviceSecretClaims, *common.ServiceError)
+}

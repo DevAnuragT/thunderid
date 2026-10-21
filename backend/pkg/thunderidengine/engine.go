@@ -229,7 +229,7 @@ func New(mux *http.ServeMux, opts ...Option) *Engine {
 		engineCtx.transactioner, revocationEnforcer, revocationService,
 		// The embedded engine has no SSO session store, so prompt=none keeps answering
 		// login_required rather than consulting a session.
-		nil, engineCtx.flowProvider, oauthConfig)
+		nil, engineCtx.flowProvider, engineCtx.deviceSecretProvider, oauthConfig)
 	if err != nil {
 		logger.Fatal(ctx, "Failed to initialize OAuth services", log.Error(err))
 	}
@@ -393,6 +393,8 @@ type engineContext struct {
 	authzProvider             providers.AuthorizationProvider
 	attestationProvider       providers.AttestationProvider
 	captchaValidationProvider providers.CaptchaValidationProvider
+
+	deviceSecretProvider      providers.DeviceSecretProvider
 
 	transactioner        providers.Transactioner
 	runtimeStoreProvider providers.RuntimeStoreProvider
@@ -586,3 +588,9 @@ func WithCaptchaValidationProvider(provider providers.CaptchaValidationProvider)
 func WithRuntimeCryptoProvider(provider kmprovider.RuntimeCryptoProvider) Option {
 	return func(c *engineContext) { c.runtimeCryptoSvc = provider }
 }
+
+// WithDeviceSecretProvider supplies the DeviceSecretProvider for Native Mobile SSO.
+func WithDeviceSecretProvider(provider providers.DeviceSecretProvider) Option {
+	return func(c *engineContext) { c.deviceSecretProvider = provider }
+}
+

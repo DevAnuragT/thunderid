@@ -1417,3 +1417,37 @@ type PublicKeyInfo struct {
 	CertificateDER      []byte
 	CertificateChainDER [][]byte // leaf first, then intermediates; nil if not certificate-backed
 }
+
+// DeviceSecretParams holds parameters for generating a device secret.
+type DeviceSecretParams struct {
+	Sub            string                 `json:"sub"`
+	AuthID         string                 `json:"auth_id"`
+	ClientID       string                 `json:"client_id"`
+	Scope          string                 `json:"scope"`
+	ACR            string                 `json:"acr"`
+	Claims         map[string]interface{} `json:"claims,omitempty"`
+	Issuer         string                 `json:"iss"`
+	CnfJKT         string                 `json:"cnf_jkt"`
+	ExpiryDuration time.Duration          `json:"expiry_duration"`
+}
+
+// DeviceSecretResult holds the generated device secret and its ds_hash.
+type DeviceSecretResult struct {
+	DeviceSecret string    `json:"device_secret"`
+	DSHash       string    `json:"ds_hash"`
+	ExpiresAt    time.Time `json:"expires_at"`
+}
+
+// DeviceSecretClaims holds validated claims extracted from a device secret.
+type DeviceSecretClaims struct {
+	Sub       string                 `json:"sub"`
+	AuthID    string                 `json:"auth_id"`
+	ClientID  string                 `json:"client_id"`
+	Scope     string                 `json:"scope"`
+	ACR       string                 `json:"acr"`
+	Claims    map[string]interface{} `json:"claims,omitempty"`
+	CnfJKT    string                 `json:"cnf_jkt"`
+	Issuer    string                 `json:"iss"`
+	ExpiresAt time.Time              `json:"exp"`
+	JTI       string                 `json:"jti"`
+}
