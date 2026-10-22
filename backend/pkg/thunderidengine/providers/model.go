@@ -1420,15 +1420,18 @@ type PublicKeyInfo struct {
 
 // DeviceSecretParams holds parameters for generating a device secret.
 type DeviceSecretParams struct {
-	Sub            string                 `json:"sub"`
-	AuthID         string                 `json:"auth_id"`
-	ClientID       string                 `json:"client_id"`
-	Scope          string                 `json:"scope"`
-	ACR            string                 `json:"acr"`
-	Claims         map[string]interface{} `json:"claims,omitempty"`
-	Issuer         string                 `json:"iss"`
-	CnfJKT         string                 `json:"cnf_jkt"`
-	ExpiryDuration time.Duration          `json:"expiry_duration"`
+	Sub      string                 `json:"sub"`
+	AuthID   string                 `json:"auth_id"`
+	ClientID string                 `json:"client_id"`
+	Scope    string                 `json:"scope"`
+	ACR      string                 `json:"acr"`
+	Claims   map[string]interface{} `json:"claims,omitempty"`
+	Issuer   string                 `json:"iss"`
+	// CnfJKT is the RFC 7638 thumbprint of the requesting app's DPoP key. The engine mints a device
+	// secret only for a DPoP-bound token request, so it is never empty; a provider must refuse an
+	// empty value rather than issue an unbound (bearer) device secret.
+	CnfJKT         string        `json:"cnf_jkt"`
+	ExpiryDuration time.Duration `json:"expiry_duration"`
 	// SessionID is the session identifier (sid) shared by the ID token and the device secret
 	// minted together. The token exchange refuses a device secret whose sid differs from the
 	// presented ID token's.

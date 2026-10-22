@@ -1868,6 +1868,34 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_W
 	suite.mockTokenBuilder.AssertNotCalled(suite.T(), "BuildAccessToken", mock.Anything, mock.Anything)
 }
 
+func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_WithoutDPoPRejected() {
+	// Without a DPoP proof the device secret could not be bound to a key (cnf.jkt).
+	authCodeWithSSO := suite.testAuthzCode
+	authCodeWithSSO.Scopes = "openid " + constants.ScopeDeviceSSO
+
+	called := false
+	mockDS := &mockDeviceSecretProvider{
+		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (
+			*providers.DeviceSecretResult, *tidcommon.ServiceError) {
+			called = true
+			return &providers.DeviceSecretResult{DeviceSecret: "ds", DSHash: "h"}, nil
+		},
+	}
+	suite.handler = suite.newDeviceSSOHandler(mockDS)
+	suite.mockAuthzService.On("GetAuthorizationCodeDetails", mock.Anything, testClientID, "test-auth-code").
+		Return(&authCodeWithSSO, nil)
+
+	tokenReq := *suite.testTokenReq
+	result, err := suite.handler.HandleGrant(context.Background(), &tokenReq, suite.deviceSSOApp())
+
+	suite.Nil(result)
+	suite.Require().NotNil(err)
+	suite.Equal(constants.ErrorInvalidRequest, err.Error)
+	suite.Equal("device_sso requires a DPoP-bound token request", err.ErrorDescription)
+	suite.False(called, "no unbound device secret is minted")
+	suite.mockTokenBuilder.AssertNotCalled(suite.T(), "BuildAccessToken", mock.Anything, mock.Anything)
+}
+
 func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_NoProviderConfigured() {
 	authCodeWithSSO := suite.testAuthzCode
 	authCodeWithSSO.Scopes = "openid " + constants.ScopeDeviceSSO
@@ -1906,7 +1934,8 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_P
 	suite.stubDeviceSSOAccessToken("openid", constants.ScopeDeviceSSO)
 
 	tokenReq := *suite.testTokenReq
-	result, err := suite.handler.HandleGrant(context.Background(), &tokenReq, suite.deviceSSOApp())
+	ctx := dpop.WithJkt(context.Background(), testDPoPThumbprint)
+	result, err := suite.handler.HandleGrant(ctx, &tokenReq, suite.deviceSSOApp())
 
 	suite.Nil(result)
 	suite.Require().NotNil(err)
@@ -1924,7 +1953,8 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_E
 	suite.stubDeviceSSOAccessToken("openid", constants.ScopeDeviceSSO)
 
 	tokenReq := *suite.testTokenReq
-	result, err := suite.handler.HandleGrant(context.Background(), &tokenReq, suite.deviceSSOApp())
+	ctx := dpop.WithJkt(context.Background(), testDPoPThumbprint)
+	result, err := suite.handler.HandleGrant(ctx, &tokenReq, suite.deviceSSOApp())
 
 	suite.Nil(result)
 	suite.Require().NotNil(err)

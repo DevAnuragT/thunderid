@@ -3992,6 +3992,28 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_DP
 	suite.Equal(constants.ErrorInvalidDPoPProof, errResp.Error)
 }
 
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_UnboundSecretRejected() {
+	// A device secret without cnf.jkt would be a bearer credential, even with a DPoP proof present.
+	ds := &mockDeviceSecretProvider{
+		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (
+			*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
+			c := deviceSecretClaims()
+			c.CnfJKT = ""
+			return c, nil
+		},
+	}
+	handler := suite.newDeviceSecretHandler(ds)
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
+
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest(""), app)
+	suite.Nil(result)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInvalidGrant, errResp.Error)
+	suite.Contains(errResp.ErrorDescription, "not bound to a DPoP key")
+}
+
 func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_SubjectMismatch() {
 	ds := &mockDeviceSecretProvider{
 		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (

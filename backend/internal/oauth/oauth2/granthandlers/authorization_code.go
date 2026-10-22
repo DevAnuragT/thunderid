@@ -287,7 +287,8 @@ func (h *authorizationCodeGrantHandler) HandleGrant(ctx context.Context, tokenRe
 
 // validateDeviceSSOGrant checks that a grant carrying the device_sso scope may mint a device secret:
 // the deployment supports Native SSO, the client is registered for it, the grant also issues an ID
-// token (the device secret and the ID token are issued together or not at all).
+// token (the device secret and the ID token are issued together or not at all), and the token
+// request is DPoP-bound so the device secret can be bound to the requesting app's key (cnf.jkt).
 func (h *authorizationCodeGrantHandler) validateDeviceSSOGrant(ctx context.Context,
 	oauthApp *providers.OAuthClient, scopes []string) *model.ErrorResponse {
 	if h.deviceSecretProvider == nil {
@@ -310,6 +311,14 @@ func (h *authorizationCodeGrantHandler) validateDeviceSSOGrant(ctx context.Conte
 		return &model.ErrorResponse{
 			Error:            constants.ErrorInvalidScope,
 			ErrorDescription: "The device_sso scope requires the openid scope",
+		}
+	}
+	// The device secret is bound to the requesting app's DPoP key (cnf.jkt); without a proof it
+	// would be a long-lived bearer credential.
+	if dpop.GetJkt(ctx) == "" {
+		return &model.ErrorResponse{
+			Error:            constants.ErrorInvalidRequest,
+			ErrorDescription: "device_sso requires a DPoP-bound token request",
 		}
 	}
 	return nil

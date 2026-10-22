@@ -493,20 +493,25 @@ func (h *tokenExchangeGrantHandler) validateDeviceSecretActor(ctx context.Contex
 	}
 
 	// The child app must prove possession of the key the device secret was bound to: the DPoP proof
-	// on this request is signed by the originating app's key, whose thumbprint is cnf.jkt.
-	if dsClaims.CnfJKT != "" {
-		currentDPoPJkt := dpop.GetJkt(ctx)
-		if currentDPoPJkt == "" {
-			return nil, &model.ErrorResponse{
-				Error:            constants.ErrorInvalidDPoPProof,
-				ErrorDescription: "A DPoP proof signed by the key bound to the device secret is required",
-			}
+	// on this request is signed by the originating app's key, whose thumbprint is cnf.jkt. A device
+	// secret without that binding would be a bearer credential and is not accepted.
+	if dsClaims.CnfJKT == "" {
+		return nil, &model.ErrorResponse{
+			Error:            constants.ErrorInvalidGrant,
+			ErrorDescription: "The device secret is not bound to a DPoP key (cnf.jkt)",
 		}
-		if dsClaims.CnfJKT != currentDPoPJkt {
-			return nil, &model.ErrorResponse{
-				Error:            constants.ErrorInvalidGrant,
-				ErrorDescription: "DPoP key thumbprint does not match cnf.jkt in device secret",
-			}
+	}
+	currentDPoPJkt := dpop.GetJkt(ctx)
+	if currentDPoPJkt == "" {
+		return nil, &model.ErrorResponse{
+			Error:            constants.ErrorInvalidDPoPProof,
+			ErrorDescription: "A DPoP proof signed by the key bound to the device secret is required",
+		}
+	}
+	if dsClaims.CnfJKT != currentDPoPJkt {
+		return nil, &model.ErrorResponse{
+			Error:            constants.ErrorInvalidGrant,
+			ErrorDescription: "DPoP key thumbprint does not match cnf.jkt in device secret",
 		}
 	}
 
