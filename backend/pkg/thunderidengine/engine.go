@@ -394,7 +394,7 @@ type engineContext struct {
 	attestationProvider       providers.AttestationProvider
 	captchaValidationProvider providers.CaptchaValidationProvider
 
-	deviceSecretProvider      providers.DeviceSecretProvider
+	deviceSecretProvider providers.DeviceSecretProvider
 
 	transactioner        providers.Transactioner
 	runtimeStoreProvider providers.RuntimeStoreProvider
@@ -593,4 +593,3 @@ func WithRuntimeCryptoProvider(provider kmprovider.RuntimeCryptoProvider) Option
 func WithDeviceSecretProvider(provider providers.DeviceSecretProvider) Option {
 	return func(c *engineContext) { c.deviceSecretProvider = provider }
 }
-

@@ -3736,7 +3736,8 @@ func deviceSecretClaims() *providers.DeviceSecretClaims {
 // validDeviceSecretProvider accepts testDeviceSecret for any client and returns deviceSecretClaims.
 func validDeviceSecretProvider() *mockDeviceSecretProvider {
 	return &mockDeviceSecretProvider{
-		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
+		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (
+			*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
 			if deviceSecret != testDeviceSecret {
 				return nil, &tidcommon.ServiceError{Type: tidcommon.ClientErrorType,
 					ErrorDescription: tidcommon.I18nMessage{DefaultValue: "Invalid device secret signature"}}
@@ -3746,7 +3747,9 @@ func validDeviceSecretProvider() *mockDeviceSecretProvider {
 	}
 }
 
-func (suite *TokenExchangeGrantHandlerTestSuite) newDeviceSecretHandler(ds providers.DeviceSecretProvider) *tokenExchangeGrantHandler {
+func (suite *TokenExchangeGrantHandlerTestSuite) newDeviceSecretHandler(
+	ds providers.DeviceSecretProvider,
+) *tokenExchangeGrantHandler {
 	return &tokenExchangeGrantHandler{
 		tokenBuilder:         suite.mockTokenBuilder,
 		tokenValidator:       suite.mockTokenValidator,
@@ -3777,7 +3780,9 @@ func idTokenClaims() *tokenservice.SubjectTokenClaims {
 	}
 }
 
-func (suite *TokenExchangeGrantHandlerTestSuite) stubSubjectToken(app *providers.OAuthClient, claims *tokenservice.SubjectTokenClaims) {
+func (suite *TokenExchangeGrantHandlerTestSuite) stubSubjectToken(
+	app *providers.OAuthClient, claims *tokenservice.SubjectTokenClaims,
+) {
 	suite.mockTokenValidator.On("ValidateNativeSSOSubjectToken", mock.Anything, "some-id-token", app).
 		Return(claims, nil).Once()
 }
@@ -3792,7 +3797,8 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_DeviceSSO_Sco
 }
 
 func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_DeviceSecret_ActorTokenType_Valid() {
-	errResp := suite.handler.ValidateGrant(context.Background(), deviceSecretExchangeRequest("profile"), suite.deviceSSOApp())
+	errResp := suite.handler.ValidateGrant(context.Background(), deviceSecretExchangeRequest("profile"),
+		suite.deviceSSOApp())
 	suite.Nil(errResp)
 }
 
@@ -3822,7 +3828,8 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_Cl
 	called := false
 	ds := validDeviceSecretProvider()
 	validate := ds.validateFunc
-	ds.validateFunc = func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
+	ds.validateFunc = func(ctx context.Context, clientID, deviceSecret string) (
+		*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
 		called = true
 		return validate(ctx, clientID, deviceSecret)
 	}
@@ -3855,7 +3862,8 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_In
 
 func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_ProviderServerError() {
 	ds := &mockDeviceSecretProvider{
-		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
+		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (
+			*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
 			return nil, &tidcommon.ServiceError{Type: tidcommon.ServerErrorType,
 				ErrorDescription: tidcommon.I18nMessage{DefaultValue: "key store unreachable"}}
 		},
@@ -3916,7 +3924,8 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_SI
 		suite.Run(tc.name, func() {
 			suite.SetupTest()
 			ds := &mockDeviceSecretProvider{
-				validateFunc: func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
+				validateFunc: func(ctx context.Context, clientID, deviceSecret string) (
+					*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
 					c := deviceSecretClaims()
 					c.SessionID = tc.deviceSID
 					return c, nil
@@ -3964,7 +3973,8 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_DP
 
 func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_SubjectMismatch() {
 	ds := &mockDeviceSecretProvider{
-		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
+		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (
+			*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
 			c := deviceSecretClaims()
 			c.Sub = "someone-else"
 			return c, nil
@@ -4051,7 +4061,8 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_De
 	var seen *providers.DerivedConsentRequest
 	ds := &mockDeviceSSOConsentProvider{
 		mockDeviceSecretProvider: *validDeviceSecretProvider(),
-		resolveFunc: func(ctx context.Context, req *providers.DerivedConsentRequest) (*providers.DerivedConsentResult, *tidcommon.ServiceError) {
+		resolveFunc: func(ctx context.Context, req *providers.DerivedConsentRequest) (
+			*providers.DerivedConsentResult, *tidcommon.ServiceError) {
 			seen = req
 			return &providers.DerivedConsentResult{Allowed: true}, nil
 		},
@@ -4080,7 +4091,8 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_De
 func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_DerivedConsentRequiresInteraction() {
 	ds := &mockDeviceSSOConsentProvider{
 		mockDeviceSecretProvider: *validDeviceSecretProvider(),
-		resolveFunc: func(ctx context.Context, req *providers.DerivedConsentRequest) (*providers.DerivedConsentResult, *tidcommon.ServiceError) {
+		resolveFunc: func(ctx context.Context, req *providers.DerivedConsentRequest) (
+			*providers.DerivedConsentResult, *tidcommon.ServiceError) {
 			return &providers.DerivedConsentResult{Allowed: false, MissingClaims: []string{"email"}}, nil
 		},
 	}
@@ -4101,7 +4113,8 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_De
 func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_DerivedConsentProviderError() {
 	ds := &mockDeviceSSOConsentProvider{
 		mockDeviceSecretProvider: *validDeviceSecretProvider(),
-		resolveFunc: func(ctx context.Context, req *providers.DerivedConsentRequest) (*providers.DerivedConsentResult, *tidcommon.ServiceError) {
+		resolveFunc: func(ctx context.Context, req *providers.DerivedConsentRequest) (
+			*providers.DerivedConsentResult, *tidcommon.ServiceError) {
 			return nil, &tidcommon.ServiceError{Type: tidcommon.ServerErrorType,
 				ErrorDescription: tidcommon.I18nMessage{DefaultValue: "consent store down"}}
 		},
@@ -4120,7 +4133,8 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_De
 
 func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_CachesConsentedAttributes() {
 	ds := &mockDeviceSecretProvider{
-		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
+		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (
+			*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
 			c := deviceSecretClaims()
 			c.Claims = map[string]interface{}{"name": "Alice", "email": "alice@example.com", "picture": "data:..."}
 			return c, nil

@@ -314,7 +314,8 @@ type DeviceSecretProvider interface {
 	GenerateDeviceSecret(ctx context.Context, params *DeviceSecretParams) (*DeviceSecretResult, *common.ServiceError)
 
 	// ValidateDeviceSecret validates a presented device secret and returns its claims.
-	ValidateDeviceSecret(ctx context.Context, clientID string, deviceSecret string) (*DeviceSecretClaims, *common.ServiceError)
+	ValidateDeviceSecret(ctx context.Context, clientID string, deviceSecret string) (
+		*DeviceSecretClaims, *common.ServiceError)
 }
 
 // DeviceSSOConsentProvider is an optional extension a DeviceSecretProvider may implement to decide

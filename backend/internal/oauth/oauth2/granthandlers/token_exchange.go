@@ -154,7 +154,8 @@ func (h *tokenExchangeGrantHandler) ValidateGrant(ctx context.Context, tokenRequ
 	}
 
 	// Reject any token endpoint call with token_exchange grant that includes device_sso scope (Task 10.b)
-	if tokenRequest.Scope != "" && slices.Contains(tokenservice.ParseScopes(tokenRequest.Scope), constants.ScopeDeviceSSO) {
+	if tokenRequest.Scope != "" &&
+		slices.Contains(tokenservice.ParseScopes(tokenRequest.Scope), constants.ScopeDeviceSSO) {
 		return &model.ErrorResponse{
 			Error:            constants.ErrorInvalidScope,
 			ErrorDescription: "device_sso scope is valid only on the token endpoint with authorization_code grant",
@@ -404,10 +405,6 @@ func (h *tokenExchangeGrantHandler) HandleGrant(ctx context.Context, tokenReques
 	}, nil
 }
 
-// handleIDJAGGrant issues an ID-JAG (Identity Assertion Authorization Grant) in response to a
-// token-exchange request with requested_token_type=urn:ietf:params:oauth:token-type:id-jag. The
-// subject_token must be a self-issued token, and the audience parameter must match one of the
-// application's configured allowed audiences. DPoP binding is out of scope for ID-JAGs.
 // validateDeviceSecretActor validates a Native SSO device secret presented as the actor_token and
 // its binding to the presented ID token: the client must be enabled for device_sso, the ID token
 // must carry ds_hash = BASE64URL(SHA-256(device_secret)) and the same sid as the device secret,
@@ -560,7 +557,8 @@ func (h *tokenExchangeGrantHandler) resolveDerivedConsent(ctx context.Context,
 // cache entry for the exchanged access token, keeping only the claims the final scopes release to
 // the child app. The entry lives as long as the access token (plus the usual buffer).
 func (h *tokenExchangeGrantHandler) cacheDeviceSecretAttributes(ctx context.Context,
-	oauthApp *providers.OAuthClient, dsClaims *providers.DeviceSecretClaims, scopes []string) (string, *model.ErrorResponse) {
+	oauthApp *providers.OAuthClient, dsClaims *providers.DeviceSecretClaims, scopes []string,
+) (string, *model.ErrorResponse) {
 	logger := log.GetLogger().With(log.String(log.LoggerKeyComponentName, "TokenExchangeGrantHandler"))
 	if h.attributeCache == nil || len(dsClaims.Claims) == 0 {
 		logger.Debug(ctx, "No attributes to cache for the exchanged token",
@@ -584,14 +582,16 @@ func (h *tokenExchangeGrantHandler) cacheDeviceSecretAttributes(ctx context.Cont
 			log.Int("claimCount", len(dsClaims.Claims)), log.Int("scopeCount", len(scopes)))
 		return "", nil
 	}
-	ttl := tokenservice.ResolveTokenConfig(h.cfg, oauthApp, tokenservice.TokenTypeAccess,
-		oauthApp.UserAccessTokenConfig().ValidityPeriodOrZero()).ValidityPeriod + constants.AttributeCacheTTLBufferSeconds
+	accessValidity := tokenservice.ResolveTokenConfig(h.cfg, oauthApp, tokenservice.TokenTypeAccess,
+		oauthApp.UserAccessTokenConfig().ValidityPeriodOrZero()).ValidityPeriod
+	ttl := accessValidity + constants.AttributeCacheTTLBufferSeconds
 	entry, svcErr := h.attributeCache.CreateAttributeCache(ctx, &attributecache.AttributeCache{
 		Attributes: attrs,
 		TTLSeconds: ttl,
 	})
 	if svcErr != nil {
-		logger.Error(ctx, "Failed to cache device secret attributes", log.Error(errors.New(svcErr.ErrorDescription.DefaultValue)))
+		logger.Error(ctx, "Failed to cache device secret attributes",
+			log.Error(errors.New(svcErr.ErrorDescription.DefaultValue)))
 		return "", &model.ErrorResponse{
 			Error:            constants.ErrorServerError,
 			ErrorDescription: "Failed to prepare user attributes for the exchanged token",
@@ -606,6 +606,10 @@ func deviceSecretHash(deviceSecret string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
+// handleIDJAGGrant issues an ID-JAG (Identity Assertion Authorization Grant) in response to a
+// token-exchange request with requested_token_type=urn:ietf:params:oauth:token-type:id-jag. The
+// subject_token must be a self-issued token, and the audience parameter must match one of the
+// application's configured allowed audiences. DPoP binding is out of scope for ID-JAGs.
 func (h *tokenExchangeGrantHandler) handleIDJAGGrant(ctx context.Context, tokenRequest *model.TokenRequest,
 	oauthApp *providers.OAuthClient) (*model.TokenResponseDTO, *model.ErrorResponse) {
 	logger := log.GetLogger().With(log.String(log.LoggerKeyComponentName, "TokenExchangeGrantHandler"))
@@ -770,11 +774,13 @@ func (h *tokenExchangeGrantHandler) getScopes(
 	validRequestedScopes := []string{}
 	for _, requestedScope := range requestedScopes {
 		if !subjectScopeSet[requestedScope] {
-			// Task 10.a: Enforce that the scope requested by the second App is a subset of the scope originally granted
+			// Task 10.a: the scope requested by the second app must be a subset of the scope originally
+			// granted.
 			if tokenRequest.ActorTokenType == string(constants.TokenTypeIdentifierDeviceSecret) {
 				return nil, &model.ErrorResponse{
-					Error:            constants.ErrorInvalidScope,
-					ErrorDescription: fmt.Sprintf("Requested scope '%s' exceeds scopes originally granted in subject token", requestedScope),
+					Error: constants.ErrorInvalidScope,
+					ErrorDescription: fmt.Sprintf(
+						"Requested scope '%s' exceeds scopes originally granted in subject token", requestedScope),
 				}
 			}
 			continue

@@ -245,7 +245,8 @@ func (h *authorizationCodeGrantHandler) HandleGrant(ctx context.Context, tokenRe
 			SessionID:      sessionID,
 		})
 		if dsErr != nil {
-			logger.Error(ctx, "Failed to generate device secret", log.Error(errors.New(dsErr.ErrorDescription.String())))
+			logger.Error(ctx, "Failed to generate device secret",
+				log.Error(errors.New(dsErr.ErrorDescription.String())))
 			return nil, &model.ErrorResponse{
 				Error:            constants.ErrorServerError,
 				ErrorDescription: "Failed to generate device secret",

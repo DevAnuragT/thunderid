@@ -1692,18 +1692,22 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestResolveAuthTime_Prefers
 }
 
 type mockDeviceSecretProvider struct {
-	generateFunc func(ctx context.Context, params *providers.DeviceSecretParams) (*providers.DeviceSecretResult, *tidcommon.ServiceError)
-	validateFunc func(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError)
+	generateFunc func(ctx context.Context, params *providers.DeviceSecretParams) (
+		*providers.DeviceSecretResult, *tidcommon.ServiceError)
+	validateFunc func(ctx context.Context, clientID, deviceSecret string) (
+		*providers.DeviceSecretClaims, *tidcommon.ServiceError)
 }
 
-func (m *mockDeviceSecretProvider) GenerateDeviceSecret(ctx context.Context, params *providers.DeviceSecretParams) (*providers.DeviceSecretResult, *tidcommon.ServiceError) {
+func (m *mockDeviceSecretProvider) GenerateDeviceSecret(ctx context.Context, params *providers.DeviceSecretParams) (
+	*providers.DeviceSecretResult, *tidcommon.ServiceError) {
 	if m.generateFunc != nil {
 		return m.generateFunc(ctx, params)
 	}
 	return nil, nil
 }
 
-func (m *mockDeviceSecretProvider) ValidateDeviceSecret(ctx context.Context, clientID, deviceSecret string) (*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
+func (m *mockDeviceSecretProvider) ValidateDeviceSecret(ctx context.Context, clientID, deviceSecret string) (
+	*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
 	if m.validateFunc != nil {
 		return m.validateFunc(ctx, clientID, deviceSecret)
 	}
@@ -1713,10 +1717,12 @@ func (m *mockDeviceSecretProvider) ValidateDeviceSecret(ctx context.Context, cli
 // mockDeviceSSOConsentProvider is a device secret provider that also resolves derived consent.
 type mockDeviceSSOConsentProvider struct {
 	mockDeviceSecretProvider
-	resolveFunc func(ctx context.Context, req *providers.DerivedConsentRequest) (*providers.DerivedConsentResult, *tidcommon.ServiceError)
+	resolveFunc func(ctx context.Context, req *providers.DerivedConsentRequest) (
+		*providers.DerivedConsentResult, *tidcommon.ServiceError)
 }
 
-func (m *mockDeviceSSOConsentProvider) ResolveDerivedConsent(ctx context.Context, req *providers.DerivedConsentRequest) (*providers.DerivedConsentResult, *tidcommon.ServiceError) {
+func (m *mockDeviceSSOConsentProvider) ResolveDerivedConsent(ctx context.Context,
+	req *providers.DerivedConsentRequest) (*providers.DerivedConsentResult, *tidcommon.ServiceError) {
 	if m.resolveFunc != nil {
 		return m.resolveFunc(ctx, req)
 	}
@@ -1731,7 +1737,9 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) deviceSSOApp() *providers.O
 }
 
 // newDeviceSSOHandler rebuilds the suite mocks and returns a handler wired with the given provider.
-func (suite *AuthorizationCodeGrantHandlerTestSuite) newDeviceSSOHandler(ds providers.DeviceSecretProvider) *authorizationCodeGrantHandler {
+func (suite *AuthorizationCodeGrantHandlerTestSuite) newDeviceSSOHandler(
+	ds providers.DeviceSecretProvider,
+) *authorizationCodeGrantHandler {
 	suite.mockAuthzService = authzmock.NewAuthorizeServiceInterfaceMock(suite.T())
 	suite.mockTokenBuilder = tokenservicemock.NewTokenBuilderInterfaceMock(suite.T())
 	suite.mockAttrCacheService = attributecachemock.NewAttributeCacheServiceInterfaceMock(suite.T())
@@ -1764,7 +1772,8 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_S
 	var generated *providers.DeviceSecretParams
 
 	mockDS := &mockDeviceSecretProvider{
-		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (*providers.DeviceSecretResult, *tidcommon.ServiceError) {
+		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (
+			*providers.DeviceSecretResult, *tidcommon.ServiceError) {
 			generated = params
 			return &providers.DeviceSecretResult{
 				DeviceSecret: "mock-device-secret-jwt",
@@ -1808,7 +1817,8 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_C
 
 	called := false
 	mockDS := &mockDeviceSecretProvider{
-		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (*providers.DeviceSecretResult, *tidcommon.ServiceError) {
+		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (
+			*providers.DeviceSecretResult, *tidcommon.ServiceError) {
 			called = true
 			return &providers.DeviceSecretResult{DeviceSecret: "ds", DSHash: "h"}, nil
 		},
@@ -1852,7 +1862,8 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_P
 	authCodeWithSSO.Scopes = "openid " + constants.ScopeDeviceSSO
 
 	mockDS := &mockDeviceSecretProvider{
-		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (*providers.DeviceSecretResult, *tidcommon.ServiceError) {
+		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (
+			*providers.DeviceSecretResult, *tidcommon.ServiceError) {
 			return nil, &tidcommon.ServiceError{
 				Code:             "ERR_DS_GEN",
 				Error:            tidcommon.I18nMessage{DefaultValue: "signing error"},
@@ -1897,7 +1908,8 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_WithoutDevi
 
 	called := false
 	mockDS := &mockDeviceSecretProvider{
-		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (*providers.DeviceSecretResult, *tidcommon.ServiceError) {
+		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (
+			*providers.DeviceSecretResult, *tidcommon.ServiceError) {
 			called = true
 			return &providers.DeviceSecretResult{DeviceSecret: "ds", DSHash: "h"}, nil
 		},
