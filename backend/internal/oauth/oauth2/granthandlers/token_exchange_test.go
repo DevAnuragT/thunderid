@@ -100,6 +100,7 @@ func (suite *TokenExchangeGrantHandlerTestSuite) SetupTest() {
 		tokenBuilder:    suite.mockTokenBuilder,
 		tokenValidator:  suite.mockTokenValidator,
 		resourceService: suite.mockResourceService,
+		cfg:             oauthconfig.Config{JWT: engineconfig.JWTConfig{Issuer: testNativeSSOIssuer}},
 	}
 
 	suite.oauthApp = &providers.OAuthClient{
@@ -3712,6 +3713,7 @@ const (
 	testDeviceSecret    = "device-secret-payload" //nolint:gosec // test fixture, not a credential
 	testDeviceSecretSID = "sid-native-sso-1"
 	testSuperClientID   = "super-app-client"
+	testNativeSSOIssuer = "https://auth.example.com"
 )
 
 // deviceSSOApp returns a copy of the suite client registered for Native SSO.
@@ -3755,6 +3757,7 @@ func (suite *TokenExchangeGrantHandlerTestSuite) newDeviceSecretHandler(
 		tokenValidator:       suite.mockTokenValidator,
 		resourceService:      suite.mockResourceService,
 		deviceSecretProvider: ds,
+		cfg:                  suite.handler.cfg,
 	}
 }
 
@@ -3767,6 +3770,7 @@ func deviceSecretExchangeRequest(scope string) *model.TokenRequest {
 		ActorToken:       testDeviceSecret,
 		ActorTokenType:   string(constants.TokenTypeIdentifierDeviceSecret),
 		Scope:            scope,
+		Audiences:        []string{testNativeSSOIssuer},
 	}
 }
 
@@ -3814,6 +3818,41 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_DeviceSecret_
 	suite.Require().NotNil(errResp)
 	suite.Equal(constants.ErrorInvalidScope, errResp.Error)
 	suite.Contains(errResp.ErrorDescription, "must include the openid scope")
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_DeviceSecret_Audience() {
+	testCases := []struct {
+		name      string
+		audiences []string
+		wantError string
+	}{
+		{"Missing", nil, constants.ErrorInvalidRequest},
+		{"Mismatch", []string{"https://other.example.com"}, constants.ErrorInvalidTarget},
+		{"TrailingSlash", []string{testNativeSSOIssuer + "/"}, constants.ErrorInvalidTarget},
+		{"Multiple", []string{testNativeSSOIssuer, "https://other.example.com"}, constants.ErrorInvalidTarget},
+		{"Issuer", []string{testNativeSSOIssuer}, ""},
+	}
+	for _, tc := range testCases {
+		suite.Run(tc.name, func() {
+			tokenRequest := deviceSecretExchangeRequest("openid profile")
+			tokenRequest.Audiences = tc.audiences
+
+			errResp := suite.handler.ValidateGrant(context.Background(), tokenRequest, suite.deviceSSOApp())
+			if tc.wantError == "" {
+				suite.Nil(errResp)
+				return
+			}
+			suite.Require().NotNil(errResp)
+			suite.Equal(tc.wantError, errResp.Error)
+		})
+	}
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_DeviceSecret_NoIssuerConfigured() {
+	handler := &tokenExchangeGrantHandler{}
+	errResp := handler.ValidateGrant(context.Background(), deviceSecretExchangeRequest("openid"), suite.deviceSSOApp())
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInvalidTarget, errResp.Error)
 }
 
 func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_OpenIDNotRequiredWithoutDeviceSecret() {

@@ -162,6 +162,12 @@ func (h *tokenExchangeGrantHandler) ValidateGrant(ctx context.Context, tokenRequ
 		}
 	}
 
+	if tokenRequest.ActorTokenType == string(constants.TokenTypeIdentifierDeviceSecret) {
+		if errResp := h.validateNativeSSOAudience(tokenRequest); errResp != nil {
+			return errResp
+		}
+	}
+
 	// Native SSO issues tokens for an OpenID Connect sign-in: a child app that names its scopes must
 	// ask for openid among them.
 	if tokenRequest.ActorTokenType == string(constants.TokenTypeIdentifierDeviceSecret) &&
@@ -343,7 +349,8 @@ func (h *tokenExchangeGrantHandler) HandleGrant(ctx context.Context, tokenReques
 		tokenservice.JoinScopes(finalScopes), oauthApp.ScopeClaims)
 
 	// Bind the token to a single target resource server (RFC 8707 resource or configured default).
-	// The RFC 8693 audience parameter is not honored. A request that resolves no permission scopes
+	// The RFC 8693 audience parameter does not select the token's audience (a Native SSO exchange
+	// checks it names this issuer, see validateNativeSSOAudience). A request that resolves no permission scopes
 	// and carries no resource is not bound to a resource server: its audience is the app's configured
 	// default audiences, falling back to the client_id.
 	targetRS, resErr := resourceindicators.ResolveAudienceBinding(
@@ -420,6 +427,27 @@ func (h *tokenExchangeGrantHandler) HandleGrant(ctx context.Context, tokenReques
 	return &model.TokenResponseDTO{
 		AccessToken: *accessToken,
 	}, nil
+}
+
+// validateNativeSSOAudience enforces OpenID Connect Native SSO for Mobile Apps 1.0 §4.1: the audience
+// parameter of a device-secret token exchange is required and must be this authorization server's
+// issuer URL. The parameter names the server the exchange is addressed to; the issued access token's
+// audience is still resolved from the resource parameter or the client's defaults.
+func (h *tokenExchangeGrantHandler) validateNativeSSOAudience(tokenRequest *model.TokenRequest) *model.ErrorResponse {
+	if len(tokenRequest.Audiences) == 0 {
+		return &model.ErrorResponse{
+			Error:            constants.ErrorInvalidRequest,
+			ErrorDescription: "The audience parameter is required for a Native SSO token exchange",
+		}
+	}
+	issuer := h.cfg.JWT.Issuer
+	if len(tokenRequest.Audiences) != 1 || issuer == "" || tokenRequest.Audiences[0] != issuer {
+		return &model.ErrorResponse{
+			Error:            constants.ErrorInvalidTarget,
+			ErrorDescription: "The audience of a Native SSO token exchange must be the issuer URL",
+		}
+	}
+	return nil
 }
 
 // validateDeviceSecretActor validates a Native SSO device secret presented as the actor_token and
