@@ -154,11 +154,21 @@ func (h *tokenExchangeGrantHandler) ValidateGrant(ctx context.Context, tokenRequ
 	}
 
 	// Reject any token endpoint call with token_exchange grant that includes device_sso scope (Task 10.b)
-	if tokenRequest.Scope != "" &&
-		slices.Contains(tokenservice.ParseScopes(tokenRequest.Scope), constants.ScopeDeviceSSO) {
+	requestedScopes := tokenservice.ParseScopes(tokenRequest.Scope)
+	if slices.Contains(requestedScopes, constants.ScopeDeviceSSO) {
 		return &model.ErrorResponse{
 			Error:            constants.ErrorInvalidScope,
 			ErrorDescription: "device_sso scope is valid only on the token endpoint with authorization_code grant",
+		}
+	}
+
+	// Native SSO issues tokens for an OpenID Connect sign-in: a child app that names its scopes must
+	// ask for openid among them.
+	if tokenRequest.ActorTokenType == string(constants.TokenTypeIdentifierDeviceSecret) &&
+		tokenRequest.Scope != "" && !slices.Contains(requestedScopes, constants.ScopeOpenID) {
+		return &model.ErrorResponse{
+			Error:            constants.ErrorInvalidScope,
+			ErrorDescription: "A Native SSO token exchange that requests scopes must include the openid scope",
 		}
 	}
 
@@ -309,6 +319,13 @@ func (h *tokenExchangeGrantHandler) HandleGrant(ctx context.Context, tokenReques
 	finalScopes, errResp := h.getScopes(tokenRequest, grantedScopes)
 	if errResp != nil {
 		return nil, errResp
+	}
+	// device_sso is never passed on to the child app (Task 10.b): an exchange that omits scope
+	// inherits the device secret's scopes, which include it.
+	if deviceSecretClaims != nil {
+		finalScopes = slices.DeleteFunc(slices.Clone(finalScopes), func(s string) bool {
+			return s == constants.ScopeDeviceSSO
+		})
 	}
 
 	// Native SSO never captures consent in the child app: the exchange succeeds only when the

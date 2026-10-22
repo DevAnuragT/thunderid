@@ -3797,9 +3797,30 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_DeviceSSO_Sco
 }
 
 func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_DeviceSecret_ActorTokenType_Valid() {
-	errResp := suite.handler.ValidateGrant(context.Background(), deviceSecretExchangeRequest("profile"),
+	errResp := suite.handler.ValidateGrant(context.Background(), deviceSecretExchangeRequest("openid profile"),
 		suite.deviceSSOApp())
 	suite.Nil(errResp)
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_DeviceSecret_NoScope_Valid() {
+	errResp := suite.handler.ValidateGrant(context.Background(), deviceSecretExchangeRequest(""),
+		suite.deviceSSOApp())
+	suite.Nil(errResp)
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_DeviceSecret_ScopeWithoutOpenIDRejected() {
+	errResp := suite.handler.ValidateGrant(context.Background(), deviceSecretExchangeRequest("profile"),
+		suite.deviceSSOApp())
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInvalidScope, errResp.Error)
+	suite.Contains(errResp.ErrorDescription, "must include the openid scope")
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_OpenIDNotRequiredWithoutDeviceSecret() {
+	// The openid requirement applies only to a Native SSO exchange.
+	tokenRequest := suite.createBasicTokenRequest("some-token")
+	tokenRequest.Scope = "read"
+	suite.Nil(suite.handler.ValidateGrant(context.Background(), tokenRequest, suite.oauthApp))
 }
 
 func (suite *TokenExchangeGrantHandlerTestSuite) TestValidateGrant_DeviceSecret_RequiresIDTokenSubject() {
@@ -4055,6 +4076,34 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_Su
 	suite.Require().NotNil(result)
 	suite.Equal("child-app-access-token", result.AccessToken.Token)
 	suite.Equal([]string{"profile"}, result.AccessToken.Scopes)
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_NoScope_DeviceSSONotInherited() {
+	// Without a scope parameter the exchange inherits the device secret's scopes, minus device_sso.
+	var seen *providers.DerivedConsentRequest
+	ds := &mockDeviceSSOConsentProvider{
+		mockDeviceSecretProvider: *validDeviceSecretProvider(),
+		resolveFunc: func(ctx context.Context, req *providers.DerivedConsentRequest) (
+			*providers.DerivedConsentResult, *tidcommon.ServiceError) {
+			seen = req
+			return &providers.DerivedConsentResult{Allowed: true}, nil
+		},
+	}
+	handler := suite.newDeviceSecretHandler(ds)
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
+	suite.mockTokenBuilder.On("BuildAccessToken", mock.Anything,
+		mock.MatchedBy(func(ctx *tokenservice.AccessTokenBuildContext) bool {
+			return tokenservice.JoinScopes(ctx.Scopes) == "openid profile"
+		})).Return(&model.TokenDTO{Token: "child-app-access-token", Scopes: []string{"openid", "profile"}}, nil).Once()
+
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest(""), app)
+
+	suite.Require().Nil(errResp)
+	suite.NotContains(result.AccessToken.Scopes, constants.ScopeDeviceSSO)
+	suite.Require().NotNil(seen)
+	suite.NotContains(seen.RequestedScopes, constants.ScopeDeviceSSO)
 }
 
 func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_DerivedConsentAllowed() {
