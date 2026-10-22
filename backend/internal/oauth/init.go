@@ -67,7 +67,8 @@ func Initialize(
 	})
 	resolver := jwksresolver.Initialize(httpClient)
 	scopeValidator := scope.Initialize()
-	discoveryService := discovery.Initialize(mux, runtimeCrypto, jweService, cfg)
+	discoveryService := discovery.Initialize(mux, runtimeCrypto, jweService, cfg,
+		discovery.WithNativeSSOSupported(deviceSecretProvider != nil))
 	jtiStore := jti.Initialize(runtimeStore)
 	// The revocation services are constructed by the service manager, not here: the session service
 	// needs the same criteria revoker, and it is wired before the OAuth engine. This registers the
