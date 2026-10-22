@@ -1839,6 +1839,35 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_C
 	suite.False(called, "no device secret is minted for a client that is not enabled")
 }
 
+func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_WithoutOpenIDRejected() {
+	// A device secret is issued only together with an ID token (Native SSO 1.0 §3.4).
+	authCodeWithSSO := suite.testAuthzCode
+	authCodeWithSSO.Scopes = "profile " + constants.ScopeDeviceSSO
+
+	called := false
+	mockDS := &mockDeviceSecretProvider{
+		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (
+			*providers.DeviceSecretResult, *tidcommon.ServiceError) {
+			called = true
+			return &providers.DeviceSecretResult{DeviceSecret: "ds", DSHash: "h"}, nil
+		},
+	}
+	suite.handler = suite.newDeviceSSOHandler(mockDS)
+	suite.mockAuthzService.On("GetAuthorizationCodeDetails", mock.Anything, testClientID, "test-auth-code").
+		Return(&authCodeWithSSO, nil)
+
+	ctx := dpop.WithJkt(context.Background(), testDPoPThumbprint)
+	tokenReq := *suite.testTokenReq
+	result, err := suite.handler.HandleGrant(ctx, &tokenReq, suite.deviceSSOApp())
+
+	suite.Nil(result)
+	suite.Require().NotNil(err)
+	suite.Equal(constants.ErrorInvalidScope, err.Error)
+	suite.Contains(err.ErrorDescription, "requires the openid scope")
+	suite.False(called, "no device secret is minted without an ID token")
+	suite.mockTokenBuilder.AssertNotCalled(suite.T(), "BuildAccessToken", mock.Anything, mock.Anything)
+}
+
 func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_NoProviderConfigured() {
 	authCodeWithSSO := suite.testAuthzCode
 	authCodeWithSSO.Scopes = "openid " + constants.ScopeDeviceSSO

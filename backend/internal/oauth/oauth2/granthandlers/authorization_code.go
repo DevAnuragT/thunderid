@@ -168,6 +168,14 @@ func (h *authorizationCodeGrantHandler) HandleGrant(ctx context.Context, tokenRe
 		accessTokenScopes = append(accessTokenScopes, downscopedNonOidc...)
 	}
 
+	// Native SSO preconditions are checked before any token is minted.
+	deviceSSO := slices.Contains(accessTokenScopes, constants.ScopeDeviceSSO)
+	if deviceSSO {
+		if errResp := h.validateDeviceSSOGrant(ctx, oauthApp, accessTokenScopes); errResp != nil {
+			return nil, errResp
+		}
+	}
+
 	// Generate access token using tokenBuilder (attributes will be filtered in BuildAccessToken)
 	userSubConfig := oauthApp.UserAccessTokenConfig()
 	accessTokenCtx := &tokenservice.AccessTokenBuildContext{
@@ -212,21 +220,7 @@ func (h *authorizationCodeGrantHandler) HandleGrant(ctx context.Context, tokenRe
 	var dsHash string
 	// This engine build has no SSO session store, so the authorization id serves as the sid.
 	sessionID := ""
-	if slices.Contains(accessTokenScopes, constants.ScopeDeviceSSO) {
-		if h.deviceSecretProvider == nil {
-			return nil, &model.ErrorResponse{
-				Error:            constants.ErrorInvalidScope,
-				ErrorDescription: "The device_sso scope is not supported by this deployment",
-			}
-		}
-		// The token endpoint re-checks that the registered client is enabled for Native SSO, so a
-		// client cannot obtain a device secret merely by asking for the scope at authorization.
-		if !slices.Contains(oauthApp.Scopes, constants.ScopeDeviceSSO) {
-			return nil, &model.ErrorResponse{
-				Error:            constants.ErrorInvalidScope,
-				ErrorDescription: "The device_sso scope is not enabled for this client",
-			}
-		}
+	if deviceSSO {
 		// The device secret and the ID token share a session id. Deployments without an SSO session
 		// store (such as an embedded engine) have no sid of their own, so the authorization id
 		// identifies the authentication instead.
@@ -289,6 +283,36 @@ func (h *authorizationCodeGrantHandler) HandleGrant(ctx context.Context, tokenRe
 	}
 
 	return tokenResponse, nil
+}
+
+// validateDeviceSSOGrant checks that a grant carrying the device_sso scope may mint a device secret:
+// the deployment supports Native SSO, the client is registered for it, the grant also issues an ID
+// token (the device secret and the ID token are issued together or not at all).
+func (h *authorizationCodeGrantHandler) validateDeviceSSOGrant(ctx context.Context,
+	oauthApp *providers.OAuthClient, scopes []string) *model.ErrorResponse {
+	if h.deviceSecretProvider == nil {
+		return &model.ErrorResponse{
+			Error:            constants.ErrorInvalidScope,
+			ErrorDescription: "The device_sso scope is not supported by this deployment",
+		}
+	}
+	// The token endpoint re-checks that the registered client is enabled for Native SSO, so a
+	// client cannot obtain a device secret merely by asking for the scope at authorization.
+	if !slices.Contains(oauthApp.Scopes, constants.ScopeDeviceSSO) {
+		return &model.ErrorResponse{
+			Error:            constants.ErrorInvalidScope,
+			ErrorDescription: "The device_sso scope is not enabled for this client",
+		}
+	}
+	// Native SSO for Mobile Apps 1.0 §3.4: the device secret is returned together with an ID token,
+	// which carries the ds_hash and sid that bind the two.
+	if !slices.Contains(scopes, constants.ScopeOpenID) {
+		return &model.ErrorResponse{
+			Error:            constants.ErrorInvalidScope,
+			ErrorDescription: "The device_sso scope requires the openid scope",
+		}
+	}
+	return nil
 }
 
 func (h *authorizationCodeGrantHandler) retrieveAndValidateAuthCode(
