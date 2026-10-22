@@ -243,6 +243,11 @@ func (p *defaultAuthnProvider) StoreAccountLink(ctx context.Context, entityRefer
 	if svcErr != nil {
 		return svcErr
 	}
+	// A declarative user cannot be written to, so its links can only be declared with it.
+	if entityResult.IsReadOnly {
+		return newClientError(authnprovidercm.ErrorCodeNotImplemented, "Account link not stored",
+			"Account links of a declarative user cannot be stored")
+	}
 
 	if err := p.entitySvc.LinkAccount(ctx, entityResult.ID, idpID, sub); err != nil {
 		if errors.Is(err, entity.ErrIndexedValueLimitExceeded) {
@@ -398,7 +403,7 @@ func (p *defaultAuthnProvider) buildAuthnResult(
 func (p *defaultAuthnProvider) buildEntityAuthnResult(
 	ctx context.Context, entityID string,
 ) (*providers.AuthnResult, *tidcommon.ServiceError) {
-	entityResult, getErr := p.entitySvc.GetEntity(ctx, entityID)
+	entityResult, getErr := p.entitySvc.GetEntityProfile(ctx, entityID)
 	if getErr != nil {
 		return nil, p.logAndReturnServerError(ctx, "Failed to get entity after authentication",
 			log.String("error", getErr.Error()))
@@ -468,7 +473,7 @@ func (p *defaultAuthnProvider) resolveEntityFromToken(
 		entityID = *identifiedEntityID
 	}
 
-	entityResult, getErr := p.entitySvc.GetEntity(ctx, entityID)
+	entityResult, getErr := p.entitySvc.GetEntityProfile(ctx, entityID)
 	if getErr != nil {
 		return nil, p.logAndReturnServerError(ctx, "Failed to get entity attributes",
 			log.String("error", getErr.Error()))

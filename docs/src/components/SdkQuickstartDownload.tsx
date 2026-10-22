@@ -32,9 +32,24 @@ interface EcosystemReleasesData {
  */
 interface SdkQuickstartDownloadProps {
   /**
-   * The `packageId` of the SDK package, as tracked in `ecosystem-releases.json` (e.g. `react`, `nextjs`, `express`).
+   * The `packageId` of the release, as tracked in `ecosystem-releases.json`: an SDK package (e.g. `react`,
+   * `nextjs`, `express`) or, with `type="sample"`, a sample (e.g. `integrations/flutter-app-auth`).
    */
   packageId: string;
+  /**
+   * Which kind of release `packageId` names. Defaults to `sdk`.
+   */
+  type?: 'sdk' | 'sample';
+  /**
+   * The samples-repo sample whose released archive to offer (e.g. `quickstarts/react`), for an SDK
+   * `packageId` whose quickstart lives in the samples repo. `packageId` still selects the prompt.
+   */
+  sample?: string;
+  /**
+   * The package the sample is wired with, shown as "prewired with ...". Defaults to the release's package
+   * name, which suits SDK releases; a sample's release name is not a package, so pass one for samples.
+   */
+  prewiredWith?: string;
   /**
    * The framework logo to show in the icon badge, e.g. `<ReactLogo size={22} />`.
    */
@@ -116,6 +131,9 @@ const Actions = styled('div')({
  */
 export default function SdkQuickstartDownload({
   packageId,
+  type = 'sdk',
+  sample = undefined,
+  prewiredWith = undefined,
   icon = undefined,
   promptFlow = undefined,
 }: SdkQuickstartDownloadProps): React.ReactElement | null {
@@ -136,17 +154,25 @@ export default function SdkQuickstartDownload({
     fetch(withBaseUrl('/data/ecosystem-releases.json'), {signal: controller.signal})
       .then((r) => r.json() as Promise<EcosystemReleasesData>)
       .then((data) => {
-        const entry = data.releases?.find((release) => release.type === 'sdk' && release.packageId === packageId);
+        const entry = data.releases?.find((release) =>
+          sample
+            ? release.type === 'sample' && release.packageId === sample
+            : release.type === type && release.packageId === packageId,
+        );
         const match = entry?.assets.find((a) => a.downloadUrl.endsWith('.zip'));
         if (!entry || !match) return;
-        setPackageName(entry.packageName ?? '');
+        // A sample's release name is not a package, so fall back to the SDK's own package name.
+        const sdkPackageName = sample
+          ? data.releases.find((release) => release.type === 'sdk' && release.packageId === packageId)?.packageName
+          : entry.packageName;
+        setPackageName(prewiredWith ?? sdkPackageName ?? '');
         setAsset(match);
       })
       .catch((err: unknown) => {
         if (err instanceof DOMException && err.name === 'AbortError') return;
       });
     return () => controller.abort();
-  }, [withBaseUrl, packageId]);
+  }, [withBaseUrl, packageId, type, sample, prewiredWith]);
 
   const handleCopyPrompt = async (): Promise<void> => {
     if (!promptFlow || copyState === 'copying') return;

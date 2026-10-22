@@ -185,6 +185,22 @@ CREATE TABLE "AUTHORIZATION_PDP_CONNECTION" (
 CREATE UNIQUE INDEX idx_authorization_pdp_connection_type_name_deployment
 	ON "AUTHORIZATION_PDP_CONNECTION" (DEPLOYMENT_ID, TYPE, NAME);
 
+-- Table to store outbound HTTP endpoint connections. Secret values in PROPERTIES are encrypted.
+CREATE TABLE "HTTP_CONNECTION" (
+    DEPLOYMENT_ID VARCHAR(255) NOT NULL,
+    ID            VARCHAR(36) NOT NULL,
+    NAME          VARCHAR(255) NOT NULL,
+    DESCRIPTION   VARCHAR(500),
+    PROPERTIES    JSONB NOT NULL,
+    CREATED_AT    TIMESTAMPTZ DEFAULT NOW(),
+    UPDATED_AT    TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (DEPLOYMENT_ID, ID)
+);
+
+-- Unique constraint: HTTP connection names must be unique per deployment.
+CREATE UNIQUE INDEX idx_http_connection_name_deployment
+    ON "HTTP_CONNECTION" (DEPLOYMENT_ID, NAME);
+
 -- Table to store certificates associated with various entities.
 CREATE TABLE "CERTIFICATE" (
     DEPLOYMENT_ID VARCHAR(255) NOT NULL,
@@ -454,7 +470,8 @@ CREATE UNIQUE INDEX idx_gateway_default_deployment
 
 -- A captured state of this deployment's configuration, named by a hash of what it captured and
 -- ordered per deployment. It is what is applied to a gateway. Its values, when the export carried
--- any, are held encrypted as one secret.
+-- any, are held encrypted as one secret. CREATED_BY is the id of the user it was
+-- captured for; their name is read from the trusted issuer when shown, never stored.
 CREATE TABLE "CONFIGURATION_VERSION" (
     DEPLOYMENT_ID VARCHAR(255) NOT NULL,
     ID VARCHAR(36) PRIMARY KEY,
@@ -464,20 +481,40 @@ CREATE TABLE "CONFIGURATION_VERSION" (
     RESOURCES TEXT NOT NULL,
     VARIABLES TEXT,
     NOTE TEXT,
+    IS_CURRENT CHAR(1) NOT NULL DEFAULT '0',
     CREATED_AT TIMESTAMPTZ DEFAULT NOW(),
+    CREATED_BY VARCHAR(255),
     UNIQUE (DEPLOYMENT_ID, SEQ),
     UNIQUE (DEPLOYMENT_ID, HASH)
 );
 
 -- The configuration version each gateway holds, and the one it held before, which is what a revert
--- returns it to. A gateway declared in a file has no GATEWAY row, so there is no foreign key.
+-- returns it to, with who applied it. A gateway declared in a file has no GATEWAY row, so there is no foreign key.
 CREATE TABLE "GATEWAY_APPLIED_VERSION" (
     DEPLOYMENT_ID VARCHAR(255) NOT NULL,
     GATEWAY_ID VARCHAR(36) NOT NULL,
     APPLIED_SEQ INTEGER NOT NULL,
     PREVIOUS_SEQ INTEGER,
     APPLIED_AT TIMESTAMPTZ DEFAULT NOW(),
+    APPLIED_BY VARCHAR(255),
+    -- When each value the applied version refers to was last set, as the gateway's store said at the
+    -- apply, so the next apply reports those set again since by comparing the store's own times.
+    HELD_VALUES TEXT,
     PRIMARY KEY (GATEWAY_ID, DEPLOYMENT_ID)
+);
+
+-- One apply or revert at a time per gateway, across every node of this plane: an apply claims the
+-- row with a token of its own before it sends anything and clears it when done, and a claim older
+-- than an import may take is taken over. PENDING_LATEST records that the latest version is to be
+-- applied again once the running apply finishes, for whoever asked while it ran.
+CREATE TABLE "GATEWAY_APPLY_LEASE" (
+    DEPLOYMENT_ID VARCHAR(255) NOT NULL,
+    GATEWAY_ID VARCHAR(36) NOT NULL,
+    TOKEN VARCHAR(36),
+    APPLYING_SINCE TIMESTAMPTZ,
+    PENDING_LATEST BOOLEAN NOT NULL DEFAULT FALSE,
+    PENDING_BY VARCHAR(255),
+    PRIMARY KEY (DEPLOYMENT_ID, GATEWAY_ID)
 );
 
 -- The resources each gateway is set to leave alone: an apply neither writes nor removes them there,
@@ -492,6 +529,9 @@ CREATE TABLE "GATEWAY_EXCLUDED_RESOURCE" (
     RESOURCE_TYPE VARCHAR(255) NOT NULL,
     RESOURCE_ID VARCHAR(255),
     RESOURCE_NAME VARCHAR(255),
+    -- A resource skipped for one apply is owed to the gateway until an apply writes or removes it,
+    -- rather than left alone for good.
+    ONCE BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (DEPLOYMENT_ID, GATEWAY_ID, RESOURCE_KEY)
 );
 
@@ -504,7 +544,7 @@ CREATE TABLE "GATEWAY_EXCLUDED_RESOURCE" (
 -- organization units a section names one by one are rows of RESOURCE_SHARING_POLICY_UNIT.
 CREATE TABLE "RESOURCE_SHARING_POLICY" (
     DEPLOYMENT_ID    VARCHAR(255) NOT NULL,
-    ID               VARCHAR(36) PRIMARY KEY,
+    ID               VARCHAR(36) NOT NULL,
     RESOURCE_TYPE    VARCHAR(64) NOT NULL,
     RESOURCE_ID      VARCHAR(36) NOT NULL,
     OWNING_OU_ID     VARCHAR(36) NOT NULL,
@@ -515,10 +555,11 @@ CREATE TABLE "RESOURCE_SHARING_POLICY" (
     VERSION          INTEGER NOT NULL DEFAULT 1,
     CREATED_AT       TIMESTAMPTZ DEFAULT NOW(),
     UPDATED_AT       TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (DEPLOYMENT_ID, ID),
     UNIQUE (DEPLOYMENT_ID, RESOURCE_TYPE, RESOURCE_ID, INITIATING_OU_ID)
 );
 
-CREATE INDEX idx_rsp_parent ON "RESOURCE_SHARING_POLICY" (PARENT_POLICY_ID);
+CREATE INDEX idx_rsp_parent ON "RESOURCE_SHARING_POLICY" (DEPLOYMENT_ID, PARENT_POLICY_ID);
 
 -- The organization units a policy names one by one: the direct children of a 'selected' child-units
 -- decision, and the roots of a 'selected' other-tree-roots decision. A blanket decision names none,
@@ -526,12 +567,13 @@ CREATE INDEX idx_rsp_parent ON "RESOURCE_SHARING_POLICY" (PARENT_POLICY_ID);
 -- resource on beneath itself.
 CREATE TABLE "RESOURCE_SHARING_POLICY_UNIT" (
     DEPLOYMENT_ID VARCHAR(255) NOT NULL,
-    POLICY_ID     VARCHAR(36) NOT NULL
-                  REFERENCES "RESOURCE_SHARING_POLICY" (ID) ON DELETE CASCADE,
+    POLICY_ID     VARCHAR(36) NOT NULL,
     SECTION       VARCHAR(16) NOT NULL CHECK (SECTION IN ('childUnits', 'otherTreeRoots')),
     OU_ID         VARCHAR(36) NOT NULL,
     REACH         VARCHAR(16) NOT NULL CHECK (REACH IN ('unit', 'subtree')),
-    PRIMARY KEY (POLICY_ID, OU_ID),
+    PRIMARY KEY (DEPLOYMENT_ID, POLICY_ID, OU_ID),
+    FOREIGN KEY (DEPLOYMENT_ID, POLICY_ID)
+        REFERENCES "RESOURCE_SHARING_POLICY" (DEPLOYMENT_ID, ID) ON DELETE CASCADE,
     CHECK (SECTION = 'childUnits' OR REACH = 'unit')
 );
 
@@ -542,23 +584,25 @@ CREATE INDEX idx_rspu_ou ON "RESOURCE_SHARING_POLICY_UNIT" (DEPLOYMENT_ID, OU_ID
 -- own, stored against that unit.
 CREATE TABLE "RESOURCE_SHARING_POLICY_OVERLAY_RULE" (
     DEPLOYMENT_ID       VARCHAR(255) NOT NULL,
-    ID                  VARCHAR(36) PRIMARY KEY,
-    POLICY_ID           VARCHAR(36) NOT NULL
-                        REFERENCES "RESOURCE_SHARING_POLICY" (ID) ON DELETE CASCADE,
+    ID                  VARCHAR(36) NOT NULL,
+    POLICY_ID           VARCHAR(36) NOT NULL,
     SECTION             VARCHAR(16) NOT NULL CHECK (SECTION IN ('allUnits', 'childUnits', 'otherTreeRoots')),
     OU_ID               VARCHAR(36),
     FIELD_KEY           VARCHAR(255) NOT NULL,
     RESOLVED            JSONB NOT NULL,
     REQUESTED           JSONB NOT NULL,
-    UNIQUE (POLICY_ID, SECTION, OU_ID, FIELD_KEY)
+    PRIMARY KEY (DEPLOYMENT_ID, ID),
+    FOREIGN KEY (DEPLOYMENT_ID, POLICY_ID)
+        REFERENCES "RESOURCE_SHARING_POLICY" (DEPLOYMENT_ID, ID) ON DELETE CASCADE,
+    UNIQUE (DEPLOYMENT_ID, POLICY_ID, SECTION, OU_ID, FIELD_KEY)
 );
 
-CREATE INDEX idx_rspor_policy ON "RESOURCE_SHARING_POLICY_OVERLAY_RULE" (POLICY_ID);
+CREATE INDEX idx_rspor_policy ON "RESOURCE_SHARING_POLICY_OVERLAY_RULE" (DEPLOYMENT_ID, POLICY_ID);
 
 -- The UNIQUE above leaves a blanket decision's rules unconstrained: their OU_ID is NULL, and both
 -- engines count NULLs as distinct, so one decision could hold the same field twice.
 CREATE UNIQUE INDEX idx_rspor_blanket_once
-    ON "RESOURCE_SHARING_POLICY_OVERLAY_RULE" (POLICY_ID, SECTION, FIELD_KEY)
+    ON "RESOURCE_SHARING_POLICY_OVERLAY_RULE" (DEPLOYMENT_ID, POLICY_ID, SECTION, FIELD_KEY)
     WHERE OU_ID IS NULL;
 
 -- A target organization unit's own value for one templated field of a shared resource.
