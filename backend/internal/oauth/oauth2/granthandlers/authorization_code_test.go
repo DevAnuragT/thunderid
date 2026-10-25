@@ -1766,6 +1766,29 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) stubDeviceSSOAccessToken(sc
 	}, nil).Maybe()
 }
 
+func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_ProviderDSHashMismatchRefused() {
+	authCodeWithSSO := suite.testAuthzCode
+	authCodeWithSSO.Scopes = "openid profile " + constants.ScopeDeviceSSO
+	mockDS := &mockDeviceSecretProvider{
+		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (
+			*providers.DeviceSecretResult, *tidcommon.ServiceError) {
+			// A hash the token exchange could never verify against the secret.
+			return &providers.DeviceSecretResult{DeviceSecret: "mock-device-secret-jwt", DSHash: "left-half-hash"}, nil
+		},
+	}
+	suite.handler = suite.newDeviceSSOHandler(mockDS)
+	suite.mockAuthzService.On("GetAuthorizationCodeDetails", mock.Anything, testClientID, "test-auth-code").
+		Return(&authCodeWithSSO, nil)
+	suite.stubDeviceSSOAccessToken("openid", "profile", constants.ScopeDeviceSSO)
+
+	ctx := dpop.WithJkt(context.Background(), testDPoPThumbprint)
+	tokenReq := *suite.testTokenReq
+	result, err := suite.handler.HandleGrant(ctx, &tokenReq, suite.deviceSSOApp())
+	suite.Nil(result)
+	suite.Require().NotNil(err)
+	suite.Equal(constants.ErrorServerError, err.Error)
+}
+
 func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_Success() {
 	authCodeWithSSO := suite.testAuthzCode
 	authCodeWithSSO.Scopes = "openid profile " + constants.ScopeDeviceSSO
@@ -1777,7 +1800,7 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_S
 			generated = params
 			return &providers.DeviceSecretResult{
 				DeviceSecret: "mock-device-secret-jwt",
-				DSHash:       "mock-ds-hash-123",
+				DSHash:       deviceSecretHash("mock-device-secret-jwt"),
 			}, nil
 		},
 	}
@@ -1788,8 +1811,9 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_S
 	suite.stubDeviceSSOAccessToken("openid", "profile", constants.ScopeDeviceSSO)
 	suite.mockTokenBuilder.On("BuildIDToken", mock.Anything,
 		mock.MatchedBy(func(ctx *tokenservice.IDTokenBuildContext) bool {
-			// The ID token carries ds_hash and the same sid the device secret was minted with.
-			return ctx.DSHash == "mock-ds-hash-123" && ctx.SessionID == authCodeWithSSO.CodeID
+			// The ID token carries ds_hash, derived the way the token exchange verifies it, and the
+			// same sid the device secret was minted with.
+			return ctx.DSHash == deviceSecretHash("mock-device-secret-jwt") && ctx.SessionID == authCodeWithSSO.CodeID
 		})).Return(&model.TokenDTO{Token: "test-id-token", ClientID: testClientID, Subject: testUserID}, nil)
 
 	ctx := dpop.WithJkt(context.Background(), testDPoPThumbprint)
@@ -1820,7 +1844,7 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_C
 		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (
 			*providers.DeviceSecretResult, *tidcommon.ServiceError) {
 			called = true
-			return &providers.DeviceSecretResult{DeviceSecret: "ds", DSHash: "h"}, nil
+			return &providers.DeviceSecretResult{DeviceSecret: "ds", DSHash: deviceSecretHash("ds")}, nil
 		},
 	}
 	suite.handler = suite.newDeviceSSOHandler(mockDS)
@@ -1849,7 +1873,7 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_W
 		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (
 			*providers.DeviceSecretResult, *tidcommon.ServiceError) {
 			called = true
-			return &providers.DeviceSecretResult{DeviceSecret: "ds", DSHash: "h"}, nil
+			return &providers.DeviceSecretResult{DeviceSecret: "ds", DSHash: deviceSecretHash("ds")}, nil
 		},
 	}
 	suite.handler = suite.newDeviceSSOHandler(mockDS)
@@ -1878,7 +1902,7 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_W
 		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (
 			*providers.DeviceSecretResult, *tidcommon.ServiceError) {
 			called = true
-			return &providers.DeviceSecretResult{DeviceSecret: "ds", DSHash: "h"}, nil
+			return &providers.DeviceSecretResult{DeviceSecret: "ds", DSHash: deviceSecretHash("ds")}, nil
 		},
 	}
 	suite.handler = suite.newDeviceSSOHandler(mockDS)
@@ -1970,7 +1994,7 @@ func (suite *AuthorizationCodeGrantHandlerTestSuite) TestHandleGrant_WithoutDevi
 		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (
 			*providers.DeviceSecretResult, *tidcommon.ServiceError) {
 			called = true
-			return &providers.DeviceSecretResult{DeviceSecret: "ds", DSHash: "h"}, nil
+			return &providers.DeviceSecretResult{DeviceSecret: "ds", DSHash: deviceSecretHash("ds")}, nil
 		},
 	}
 	suite.handler = suite.newDeviceSSOHandler(mockDS)

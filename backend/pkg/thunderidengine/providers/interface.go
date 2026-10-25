@@ -313,7 +313,9 @@ type DeviceSecretProvider interface {
 	// GenerateDeviceSecret generates a signed device secret JWT and computes ds_hash.
 	GenerateDeviceSecret(ctx context.Context, params *DeviceSecretParams) (*DeviceSecretResult, *common.ServiceError)
 
-	// ValidateDeviceSecret validates a presented device secret and returns its claims.
+	// ValidateDeviceSecret validates a presented device secret and returns its claims. Implementations
+	// must reject secrets whose associated session or grant has ended, expired or been revoked, and
+	// must do so with a non-server error so that the token exchange answers invalid_grant.
 	ValidateDeviceSecret(ctx context.Context, clientID string, deviceSecret string) (
 		*DeviceSecretClaims, *common.ServiceError)
 }

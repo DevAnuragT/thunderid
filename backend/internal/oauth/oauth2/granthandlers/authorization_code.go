@@ -253,8 +253,18 @@ func (h *authorizationCodeGrantHandler) HandleGrant(ctx context.Context, tokenRe
 				ErrorDescription: "Failed to generate device secret",
 			}
 		}
+		// The token exchange verifies ds_hash as BASE64URL(SHA-256(device_secret)) (Native SSO 1.0
+		// leaves the binding to the deployment, so the engine owns it on both sides). A provider that
+		// returns a different value would issue ID tokens no exchange could ever redeem.
+		dsHash = deviceSecretHash(dsRes.DeviceSecret)
+		if dsRes.DSHash != "" && dsRes.DSHash != dsHash {
+			logger.Error(ctx, "Device secret provider returned a ds_hash that does not match the engine's derivation")
+			return nil, &model.ErrorResponse{
+				Error:            constants.ErrorServerError,
+				ErrorDescription: "Failed to generate device secret",
+			}
+		}
 		tokenResponse.DeviceSecret = dsRes.DeviceSecret
-		dsHash = dsRes.DSHash
 	}
 
 	// Generate ID token if 'openid' scope is present

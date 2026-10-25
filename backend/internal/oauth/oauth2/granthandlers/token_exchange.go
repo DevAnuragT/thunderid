@@ -34,6 +34,7 @@ type tokenExchangeGrantHandler struct {
 	resourceService      providers.ResourceServerProvider
 	attributeCache       attributecache.AttributeCacheServiceInterface
 	deviceSecretProvider providers.DeviceSecretProvider
+	actorProvider        providers.ActorProvider
 	cfg                  oauthconfig.Config
 }
 
@@ -44,6 +45,7 @@ func newTokenExchangeGrantHandler(
 	resourceService providers.ResourceServerProvider,
 	attributeCache attributecache.AttributeCacheServiceInterface,
 	deviceSecretProvider providers.DeviceSecretProvider,
+	actorProvider providers.ActorProvider,
 	cfg oauthconfig.Config,
 ) GrantHandlerInterface {
 	return &tokenExchangeGrantHandler{
@@ -52,6 +54,7 @@ func newTokenExchangeGrantHandler(
 		resourceService:      resourceService,
 		attributeCache:       attributeCache,
 		deviceSecretProvider: deviceSecretProvider,
+		actorProvider:        actorProvider,
 		cfg:                  cfg,
 	}
 }
@@ -260,9 +263,19 @@ func (h *tokenExchangeGrantHandler) HandleGrant(ctx context.Context, tokenReques
 			if dsErr != nil {
 				return nil, dsErr
 			}
-			// The originating application is the actor on whose behalf the child app acts.
+			// The originating application is the actor on whose behalf the child app acts. The device
+			// secret names it by client_id; act.sub carries the application's resource ID, which is what
+			// the token builder resolves actors by.
+			originApp, svcErr := h.actorProvider.GetOAuthClientByClientID(ctx, deviceSecretClaims.ClientID)
+			if svcErr != nil || originApp == nil {
+				logger.Debug(ctx, "Originating application of the device secret could not be resolved")
+				return nil, &model.ErrorResponse{
+					Error:            constants.ErrorInvalidGrant,
+					ErrorDescription: "The device secret was not issued to a registered client",
+				}
+			}
 			actorClaims = &tokenservice.SubjectTokenClaims{
-				Sub:    deviceSecretClaims.ClientID,
+				Sub:    originApp.ID,
 				CnfJkt: deviceSecretClaims.CnfJKT,
 			}
 		} else {

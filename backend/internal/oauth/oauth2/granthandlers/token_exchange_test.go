@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/thunder-id/thunderid/tests/mocks/actorprovidermock"
 	"testing"
 	"time"
 
@@ -233,7 +234,7 @@ func (suite *TokenExchangeGrantHandlerTestSuite) setupSuccessfulJWTMockWithScope
 // TestNewTokenExchangeGrantHandler tests the constructor
 func (suite *TokenExchangeGrantHandlerTestSuite) TestNewTokenExchangeGrantHandler() {
 	handler := newTokenExchangeGrantHandler(suite.mockTokenBuilder, suite.mockTokenValidator,
-		suite.mockResourceService, nil, nil, oauthconfig.Config{})
+		suite.mockResourceService, nil, nil, nil, oauthconfig.Config{})
 	assert.NotNil(suite.T(), handler)
 	assert.Implements(suite.T(), (*GrantHandlerInterface)(nil), handler)
 }
@@ -3713,6 +3714,7 @@ const (
 	testDeviceSecret    = "device-secret-payload" //nolint:gosec // test fixture, not a credential
 	testDeviceSecretSID = "sid-native-sso-1"
 	testSuperClientID   = "super-app-client"
+	testSuperAppID      = "super-app-resource-id"
 	testNativeSSOIssuer = "https://auth.example.com"
 )
 
@@ -3757,8 +3759,34 @@ func (suite *TokenExchangeGrantHandlerTestSuite) newDeviceSecretHandler(
 		tokenValidator:       suite.mockTokenValidator,
 		resourceService:      suite.mockResourceService,
 		deviceSecretProvider: ds,
+		actorProvider:        suite.superAppResolver(),
 		cfg:                  suite.handler.cfg,
 	}
+}
+
+// superAppResolver resolves testSuperClientID (the client named in the device secret) to the
+// originating application's resource ID, as the token builder expects act.sub to carry.
+func (suite *TokenExchangeGrantHandlerTestSuite) superAppResolver() *actorprovidermock.ActorProviderMock {
+	ap := actorprovidermock.NewActorProviderMock(suite.T())
+	ap.On("GetOAuthClientByClientID", mock.Anything, testSuperClientID).
+		Return(&providers.OAuthClient{ID: testSuperAppID, ClientID: testSuperClientID}, nil).Maybe()
+	return ap
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_OriginClientUnknown() {
+	h := suite.newDeviceSecretHandler(validDeviceSecretProvider())
+	ap := actorprovidermock.NewActorProviderMock(suite.T())
+	ap.On("GetOAuthClientByClientID", mock.Anything, testSuperClientID).Return(nil, nil).Once()
+	h.actorProvider = ap
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
+
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	resp, errResp := h.HandleGrant(ctx, deviceSecretExchangeRequest("openid profile"), app)
+	suite.Nil(resp)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInvalidGrant, errResp.Error)
+	suite.Contains(errResp.ErrorDescription, "not issued to a registered client")
 }
 
 func deviceSecretExchangeRequest(scope string) *model.TokenRequest {
@@ -4118,7 +4146,7 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_Su
 			return ctx.Subject == testUserID &&
 				ctx.ClientID == testClientID &&
 				tokenservice.JoinScopes(ctx.Scopes) == "profile" &&
-				ctx.ActorClaims != nil && ctx.ActorClaims.Sub == testSuperClientID &&
+				ctx.ActorClaims != nil && ctx.ActorClaims.Sub == testSuperAppID &&
 				ctx.DPoPJkt == "thumbprint-tx"
 		})).Return(&model.TokenDTO{
 		Token:     "child-app-access-token",
