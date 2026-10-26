@@ -790,6 +790,12 @@ components:
         issued_token_type:
           type: string
           description: The type of the issued token (token exchange only).
+        device_secret:
+          type: string
+          description: |
+            Native SSO for Mobile Apps: the opaque device secret issued by the authorization-code
+            grant when the `device_sso` scope was granted. Sibling applications present it as the
+            `actor_token` of a token-exchange request.
 
     PARRequest:
       type: object

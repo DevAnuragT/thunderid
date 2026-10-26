@@ -4116,6 +4116,39 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_Sc
 	suite.Contains(errResp.ErrorDescription, "exceeds scopes originally granted in subject token")
 }
 
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_UnregisteredScopeRejected() {
+	// "profile" is in the device secret's grant but the child application is not registered for it.
+	handler := suite.newDeviceSecretHandler(validDeviceSecretProvider())
+	app := suite.deviceSSOApp()
+	app.Scopes = []string{"openid", constants.ScopeDeviceSSO}
+	suite.stubSubjectToken(app, idTokenClaims())
+
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest("openid profile"), app)
+	suite.Nil(result)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInvalidScope, errResp.Error)
+	suite.Contains(errResp.ErrorDescription, "'profile' is not registered for this client")
+}
+
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_InheritedScopesRestrictedToRegistered() {
+	// An omitted scope inherits the device secret's grant, minus device_sso and minus anything the
+	// child application is not registered for.
+	handler := suite.newDeviceSecretHandler(validDeviceSecretProvider())
+	app := suite.deviceSSOApp()
+	app.Scopes = []string{"openid", constants.ScopeDeviceSSO}
+	suite.stubSubjectToken(app, idTokenClaims())
+	suite.mockTokenBuilder.On("BuildAccessToken", mock.Anything,
+		mock.MatchedBy(func(ctx *tokenservice.AccessTokenBuildContext) bool {
+			return tokenservice.JoinScopes(ctx.Scopes) == "openid"
+		})).Return(&model.TokenDTO{Token: "child-app-access-token", Scopes: []string{"openid"}}, nil).Once()
+
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest(""), app)
+	suite.Nil(errResp)
+	suite.Require().NotNil(result)
+}
+
 func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_ScopeAuthorityIsDeviceSecret() {
 	// The ID token's scope claim is narrower than the device secret's; the device secret records the
 	// grant, so a scope it carries is exchangeable.

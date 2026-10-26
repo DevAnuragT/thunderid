@@ -52,7 +52,8 @@ Additional user claims (e.g. `name`, `email`) are added based on the requested s
 
 When the authorization request carried the `device_sso` scope, the ID token additionally contains
 `ds_hash` (`BASE64URL(SHA-256(device_secret))`, binding the ID token to the device secret issued in
-the same response) and `sid` (the session identifier shared with that device secret). See
+the same response) and `sid`, shared with that device secret: the SSO session identifier, or the
+authorization identifier when the sign-in created no SSO session. See
 [Authorization Code → Native SSO for Mobile Apps](../authorization-code#native-sso-for-mobile-apps).
 
 ## Authentication Context Parameters

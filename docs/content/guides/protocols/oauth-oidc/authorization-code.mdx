@@ -39,8 +39,8 @@ Authorization codes are single-use, bound to the redirect URI and client, and sh
 
 ## Native SSO for Mobile Apps
 
-When a native app asks for the `device_sso` scope (OpenID Connect Native SSO for Mobile Apps 1.0),
-the authorization-code grant issues a **device secret** next to the tokens, so that sibling apps of
+When a native application asks for the `device_sso` scope (OpenID Connect Native SSO for Mobile Apps 1.0),
+the authorization-code grant issues a **device secret** next to the tokens, so that sibling applications of
 the same vendor can sign in silently through [Token Exchange](../token-exchange#native-sso-device-secret-actor-tokens).
 
 | Aspect | Behavior |

@@ -345,6 +345,24 @@ func (h *tokenExchangeGrantHandler) HandleGrant(ctx context.Context, tokenReques
 		finalScopes = slices.DeleteFunc(slices.Clone(finalScopes), func(s string) bool {
 			return s == constants.ScopeDeviceSSO
 		})
+		// The child application only ever receives scopes it is registered for: an explicit request
+		// for anything else is refused, and an omitted scope inherits the registered subset only.
+		if len(oauthApp.Scopes) > 0 {
+			if tokenRequest.Scope == "" {
+				finalScopes = slices.DeleteFunc(finalScopes, func(s string) bool {
+					return !slices.Contains(oauthApp.Scopes, s)
+				})
+			} else {
+				for _, s := range finalScopes {
+					if !slices.Contains(oauthApp.Scopes, s) {
+						return nil, &model.ErrorResponse{
+							Error:            constants.ErrorInvalidScope,
+							ErrorDescription: fmt.Sprintf("Scope '%s' is not registered for this client", s),
+						}
+					}
+				}
+			}
+		}
 	}
 
 	// Native SSO never captures consent in the child app: the exchange succeeds only when the
