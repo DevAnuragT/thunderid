@@ -802,8 +802,10 @@ components:
           type: string
           description: |
             Native SSO for Mobile Apps: the opaque device secret issued by the authorization-code
-            grant when the `device_sso` scope was granted. Sibling applications present it as the
-            `actor_token` of a token-exchange request.
+            grant when the `device_sso` scope was granted, and returned again by the refresh_token
+            grant while `device_sso` stays in scope (the presented secret when it is still valid,
+            otherwise a replacement). Sibling applications present it as the `actor_token` of a
+            token-exchange request.
 
     PARRequest:
       type: object
