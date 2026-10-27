@@ -689,6 +689,14 @@ components:
         client_id:
           type: string
           description: The client identifier (required when not using HTTP Basic auth).
+        device_secret:
+          type: string
+          description: |
+            Native SSO for Mobile Apps, refresh_token grant only: the device secret the application
+            already holds. When the refreshed scopes still include `device_sso`, a valid secret bound
+            to this client, subject and DPoP key is kept and the refreshed ID token carries its
+            `ds_hash` and `sid`; a missing or invalid secret is replaced by a newly issued
+            `device_secret` in the response.
         client_secret:
           type: string
           description: The client secret (required for confidential clients not using HTTP Basic auth).

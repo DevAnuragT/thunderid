@@ -50,6 +50,7 @@ the same vendor can sign in silently through [Token Exchange](../token-exchange#
 | Device secret | Minted by the provider with `sub`, `auth_id`, `sid`, `client_id`, `scope`, `acr`, the consented `claims`, `cnf.jkt`, `iat`, `exp` and `jti`; returned as `device_secret` in the token response. The engine never inspects its format. |
 | ID token | Gains `ds_hash` = `BASE64URL(SHA-256(device_secret))` and `sid` (the SSO session id, or the authorization id when no session exists). |
 | `device_sso` and resources | A protocol scope: it is never mapped onto a resource server and never appears in an access token's scopes. |
+| Refresh | While `device_sso` stays in the refreshed scopes, the refresh_token grant keeps a valid `device_secret` presented in the request (bound to the same subject, client and DPoP key) or issues a new one, and the refreshed ID token carries the matching `ds_hash` and `sid`. |
 
 ## Try It in <ProductName />
 

@@ -39,6 +39,7 @@ const (
 	RequestParamSubjectTokenType    string = "subject_token_type"
 	RequestParamActorToken          string = "actor_token"
 	RequestParamActorTokenType      string = "actor_token_type"
+	RequestParamDeviceSecret        string = "device_secret"
 	RequestParamRequestedTokenType  string = "requested_token_type"
 	RequestParamAudience            string = "audience"
 	RequestParamAssertion           string = "assertion"
