@@ -152,6 +152,9 @@ const (
 	// Authorization Grant (draft-ietf-oauth-identity-assertion-authz-grant).
 	//nolint:gosec // Token type identifier, not a credential
 	TokenTypeIdentifierIDJAG TokenTypeIdentifier = "urn:ietf:params:oauth:token-type:id-jag"
+	// TokenTypeIdentifierDeviceSecret is the token type for an OIDC Native SSO device secret.
+	//nolint:gosec // Token type identifier, not a credential
+	TokenTypeIdentifierDeviceSecret TokenTypeIdentifier = "urn:openid:params:token-type:device-secret"
 )
 
 // supportedTokenTypeIdentifiers is the single source of truth for all supported token type identifiers.
@@ -161,6 +164,7 @@ var supportedTokenTypeIdentifiers = []TokenTypeIdentifier{
 	TokenTypeIdentifierIDToken,
 	TokenTypeIdentifierJWT,
 	TokenTypeIdentifierIDJAG,
+	TokenTypeIdentifierDeviceSecret,
 }
 
 // IsValid checks if the TokenTypeIdentifier is valid.
@@ -188,6 +192,7 @@ const (
 	ErrorAccessDenied             string = "access_denied"
 	ErrorLoginRequired            string = "login_required"
 	ErrorConsentRequired          string = "consent_required"
+	ErrorInteractionRequired      string = "interaction_required"
 	ErrorAccountSelectionRequired string = "account_selection_required"
 	ErrorInvalidDPoPProof         string = "invalid_dpop_proof"
 	ErrorAuthorizationPending     string = "authorization_pending"
@@ -311,7 +316,8 @@ const (
 
 // Standard OIDC scope names.
 const (
-	ScopeOpenID = "openid"
+	ScopeOpenID    = "openid"
+	ScopeDeviceSSO = "device_sso"
 )
 
 const (

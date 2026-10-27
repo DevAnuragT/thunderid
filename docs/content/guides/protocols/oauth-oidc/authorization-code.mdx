@@ -37,6 +37,20 @@ Authorization codes are single-use, bound to the redirect URI and client, and sh
 
 </details>
 
+## Native SSO for Mobile Apps
+
+When a native application asks for the `device_sso` scope (OpenID Connect Native SSO for Mobile Apps 1.0),
+the authorization-code grant issues a **device secret** next to the tokens, so that sibling applications of
+the same vendor can sign in silently through [Token Exchange](../token-exchange#native-sso-device-secret-actor-tokens).
+
+| Aspect | Behavior |
+|---|---|
+| Requesting it | `scope` must contain `openid` and `device_sso`; the application must be registered with `device_sso` in its allowed authorization scopes, and a `DeviceSecretProvider` must be configured (`WithDeviceSecretProvider`). Otherwise the request fails with `invalid_scope` or `unauthorized_client`. |
+| DPoP | A `device_sso` grant is always sender-constrained: the token request must carry a DPoP proof (`invalid_request` otherwise). The proof's key thumbprint is bound into the device secret (`cnf.jkt`). |
+| Device secret | Minted by the provider with `sub`, `auth_id`, `sid`, `client_id`, `scope`, `acr`, the consented `claims`, `cnf.jkt`, `iat`, `exp` and `jti`; returned as `device_secret` in the token response. The engine never inspects its format. |
+| ID token | Gains `ds_hash` = `BASE64URL(SHA-256(device_secret))` and `sid` (the SSO session id, or the authorization id when no session exists). |
+| `device_sso` and resources | A protocol scope: it is never mapped onto a resource server and never appears in an access token's scopes. |
+
 ## Try It in <ProductName />
 
 The Authorization Code grant is the default for newly registered applications. Confirm or enable it on your application.
