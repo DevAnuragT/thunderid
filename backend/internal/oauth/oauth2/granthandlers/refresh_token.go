@@ -776,8 +776,10 @@ func (h *refreshTokenGrantHandler) deviceSecretOnRefresh(ctx context.Context, to
 				Error:            constants.ErrorServerError,
 				ErrorDescription: "Failed to validate device secret",
 			}
+		// A kept secret must also carry the sid the refreshed ID token will repeat; without one the
+		// exchange could never bind the two, so such a secret is replaced instead.
 		case svcErr == nil && dsClaims != nil && dsClaims.Sub == claims.Sub &&
-			dsClaims.ClientID == tokenRequest.ClientID && dsClaims.CnfJKT == jkt:
+			dsClaims.ClientID == tokenRequest.ClientID && dsClaims.CnfJKT == jkt && dsClaims.SessionID != "":
 			return tokenRequest.DeviceSecret, deviceSecretHash(tokenRequest.DeviceSecret), dsClaims.SessionID, nil
 		default:
 			logger.Debug(ctx, "Presented device secret is not valid for this refresh; issuing a new one")

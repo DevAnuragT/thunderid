@@ -617,7 +617,15 @@ func (h *tokenExchangeGrantHandler) resolveDerivedConsent(ctx context.Context,
 			ErrorDescription: "Failed to resolve consent for the token exchange",
 		}
 	}
-	if result == nil || result.Allowed {
+	// Consent is reused only on an affirmative decision: a provider that returns no result has not
+	// decided, and the silent path must not widen what the user agreed to.
+	if result == nil {
+		return &model.ErrorResponse{
+			Error:            constants.ErrorInteractionRequired,
+			ErrorDescription: "The consent provider did not return an allowed decision",
+		}
+	}
+	if result.Allowed {
 		return nil
 	}
 

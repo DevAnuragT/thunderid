@@ -4149,6 +4149,24 @@ func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_In
 	suite.Require().NotNil(result)
 }
 
+func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_NilConsentResultIsNotConsent() {
+	// A consent provider that returns no decision has not consented: the silent path is refused.
+	ds := &mockDeviceSSOConsentProvider{mockDeviceSecretProvider: *validDeviceSecretProvider(),
+		resolveFunc: func(ctx context.Context, req *providers.DerivedConsentRequest) (
+			*providers.DerivedConsentResult, *tidcommon.ServiceError) {
+			return nil, nil
+		}}
+	handler := suite.newDeviceSecretHandler(ds)
+	app := suite.deviceSSOApp()
+	suite.stubSubjectToken(app, idTokenClaims())
+
+	ctx := dpop.WithJkt(context.Background(), "thumbprint-tx")
+	result, errResp := handler.HandleGrant(ctx, deviceSecretExchangeRequest("openid profile"), app)
+	suite.Nil(result)
+	suite.Require().NotNil(errResp)
+	suite.Equal(constants.ErrorInteractionRequired, errResp.Error)
+}
+
 func (suite *TokenExchangeGrantHandlerTestSuite) TestHandleGrant_DeviceSecret_ScopeAuthorityIsDeviceSecret() {
 	// The ID token's scope claim is narrower than the device secret's; the device secret records the
 	// grant, so a scope it carries is exchangeable.

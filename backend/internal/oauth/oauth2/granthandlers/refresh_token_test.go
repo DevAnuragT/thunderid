@@ -2876,6 +2876,31 @@ func (suite *RefreshTokenGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_KeepsV
 	suite.Equal("old-secret", resp.DeviceSecret)
 }
 
+func (suite *RefreshTokenGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_PresentedSecretWithoutSidIsReplaced() {
+	// A valid secret that carries no sid could never be bound to the refreshed ID token, so it is
+	// replaced like an invalid one.
+	ds := &mockDeviceSecretProvider{
+		generateFunc: func(ctx context.Context, params *providers.DeviceSecretParams) (
+			*providers.DeviceSecretResult, *tidcommon.ServiceError) {
+			return &providers.DeviceSecretResult{DeviceSecret: "fresh-secret"}, nil
+		},
+		validateFunc: func(ctx context.Context, clientID, deviceSecret string) (
+			*providers.DeviceSecretClaims, *tidcommon.ServiceError) {
+			return &providers.DeviceSecretClaims{Sub: testRefreshTokenUserID, ClientID: clientID, CnfJKT: "thumbprint-rt"}, nil
+		},
+	}
+	req, ctx := suite.deviceSSORefreshSetup(ds, "thumbprint-rt")
+	req.DeviceSecret = "sidless-secret"
+	suite.mockTokenBuilder.On("BuildIDToken", mock.Anything, mock.MatchedBy(
+		func(c *tokenservice.IDTokenBuildContext) bool {
+			return c.DSHash == deviceSecretHash("fresh-secret") && c.SessionID == "rt-jti-1"
+		})).Return(&model.TokenDTO{Token: "new.id.token"}, nil).Once()
+
+	resp, errResp := suite.handler.HandleGrant(ctx, req, suite.oauthApp)
+	suite.Require().Nil(errResp)
+	suite.Equal("fresh-secret", resp.DeviceSecret)
+}
+
 func (suite *RefreshTokenGrantHandlerTestSuite) TestHandleGrant_DeviceSSO_InvalidPresentedSecretIsReplaced() {
 	// §3.4: an invalid device_secret is processed as if none was presented.
 	ds := &mockDeviceSecretProvider{
